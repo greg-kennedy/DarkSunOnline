@@ -4,6 +4,11 @@ Reverse engineering the Dark Sun Online: Crimson Sands server
 ## [Please use the Wiki for most documentation!](https://github.com/greg-kennedy/DarkSunOnline/wiki)
 The rest of this document concerns the purpose and goals of this project.
 
+## Code
+A work-in-progress replacement server is located in the `DSOServer/` subfolder.  It requires Python 3.  Start the server with `python3 -m DSOServer`.  It listens for connections on TCP port 14902.  Very little is supported beyond sending an initial bogus "init" packet.
+
+Some unit tests in the `tests` folder exercise packet RLE compression/decompression: run `pytest` from the root folder to validate the code.
+
 ## Overview
 [Dark Sun Online: Crimson Sands](https://en.wikipedia.org/wiki/Dark_Sun_Online:_Crimson_Sands) was an early MMORPG released in 1996 for Windows 95 systems. Playing the game required an active subscription to the Total Entertainment Network ("TEN"), a paid gaming service which provided always-on servers and matchmaking for players. The game itself used a hybrid system of a centralized server for coordination, but direct peer-to-peer connection between clients as a means to reduce server load. TEN itself functioned as an authorization service for DSO (turning logged-in TEN players into account numbers for the `tenaddr.ini` file), but otherwise had little to do with the game functions or networking.
 
@@ -22,7 +27,7 @@ And see also:
 ## What's Here
 **This repository represents a public, open attempt to reverse-engineer a working server for Dark Sun Online: Crimson Sands.** It aims to provide, first, research into the workings of the server application. Eventually, the goal is to produce a standalone server emulator which original era clients can connect to and play.
 
-Currently, there is a Perl script which starts a local listening server, allows a client to connect, and prints packets as they are received. It is not possible to do anything besides pass the initial "Loading..." screen, but demonstrates packet capture for analysis.
+Currently, there is a Python module which starts a local listening server, allows a client to connect, and prints packets as they are received. It is not possible to do anything besides pass the initial "Loading..." screen, but demonstrates packet capture for analysis.
 
 As this project is very much in flux, **[the Wiki provides the most in-depth information about the reverse engineering effort](https://github.com/greg-kennedy/DarkSunOnline/wiki)** - please use it to contribute findings about the game, or read more about packet structure and game functionality. As more is discovered about the game, the Wiki should remain up-to-date, and the server can then be built from the collective knowledge.
 
