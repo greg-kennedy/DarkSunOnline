@@ -8,48 +8,90 @@ class State:
         self.lock = Lock()
 
         with self.lock:
-            self.data = {}
+            self.data = {'GLOB': {}, 'GLRG': {}}
+            #self.keys = {'GLOB': {}, 'GLRG': {}}
 
         if filename:
             self.load(filename)
 
-    def read(self, block, datatype, addr, length):
+    # static method to read from a list and return, adding empty bytes as needed
+    def read(block, addr, length):
+        addrlen = addr + length
+        shortage = addrlen - len(block)
+        if shortage > 0:
+            # zero-fill to reach addr + len
+            block += bytes(shortage)
+
+        return block[addr:addrlen]
+
+    def read_glob(self, data_type, addr, length):
         with self.lock:
-            if block not in self.data:
-                self.data[block] = {}
-            if datatype not in self.data[block]:
-                self.data[block][datatype] = bytes()
+            if data_type not in self.data['GLOB']:
+                self.data['GLOB'][data_type] = bytes()
+                #self.keys['GLOB'][data_type] = 1
 
-            addrlen = addr + length
-            shortage = addrlen - len(self.data[block][datatype])
-            if shortage > 0:
-                # zero-fill to reach addr + len
-                #print("Requested len {} bytes from {}, endpoint {}, which is beyond {} by {}".format( length, addr, addrlen, len(self.data[block][datatype]), shortage))
-                self.data[block][datatype] += bytes(shortage)
-                #print("Extended to {}".format( len(self.data[block][datatype])))
+            #return (self.keys['GLOB'][data_type], State.read(self.data['GLOB'][data_type], addr, length))
+            return (1, State.read(self.data['GLOB'][data_type], addr, length))
 
-            #print("READ {}, {} => {}", block, datatype, self.data[block][datatype])
-
-            return self.data[block][datatype][addr:addrlen]
-
-
-
-    def write(self, block, datatype, addr, data):
+    def read_glrg(self, region, data_type, addr, length):
         with self.lock:
-            if block not in self.data:
-                self.data[block] = {}
-            if datatype not in self.data[block]:
-                self.data[block][datatype] = bytes()
+            if region not in self.data['GLRG']:
+                self.data['GLRG'][region] = {}
+                #self.keys['GLRG'][region] = {}
+            if data_type not in self.data['GLRG'][region]:
+                self.data['GLRG'][region][data_type] = bytes()
+                #self.keys['GLRG'][region][data_type] = 1
 
-            addrlen = addr + len(data)
-            shortage = addrlen - len(self.data[block][datatype])
-            if shortage > 0:
-                # zero-fill to reach addr + len
-                self.data[block][datatype] += bytes(shortage)
+            #return (self.keys['GLRG'][region][data_type], State.read(self.data['GLRG'][region][data_type], addr, length))
+            return (1, State.read(self.data['GLRG'][region][data_type], addr, length))
 
-            self.data[block][datatype][addr:addrlen] = data
+    #### WRITE to global memory
+    def write(block, addr, data):
+        addrlen = addr + len(data)
+        shortage = addrlen - len(block)
+        if shortage > 0:
+            # zero-fill to reach addr + len
+            block += bytes(shortage)
 
+        block = block[:addr] + data + block[addrlen:]
 
+    def write_glob(self, key, data_type, addr, data):
+        with self.lock:
+            if data_type not in self.data['GLOB']:
+                self.data['GLOB'][data_type] = bytes()
+                #self.keys['GLOB'][data_type] = 1
+
+            # reject write if incoming key does not match expected key
+            #if key != self.keys['GLOB'][data_type]:
+                #return (self.keys['GLOB'][data_type], False)
+
+            # accept write, increment key, and return
+            State.write(self.data['GLOB'][data_type], addr, data)
+            #self.keys['GLOB'][data_type] += 1
+            #return (self.keys['GLOB'][data_type], True)
+            return (1, True)
+
+    def write_glrg(self, key, region, data_type, addr, length):
+        with self.lock:
+            if region not in self.data['GLRG']:
+                self.data['GLRG'][region] = {}
+                #self.keys['GLRG'][region] = {}
+            if data_type not in self.data['GLRG'][region]:
+                self.data['GLRG'][region][data_type] = bytes()
+                #self.keys['GLRG'][region][data_type] = 1
+
+            # reject write if incoming key does not match expected key
+            #  This doesn't seem to actually occur, so comment it out
+            #if key != self.keys['GLRG'][region][data_type]:
+                #return (self.keys['GLRG'][region][data_type], False)
+
+            # accept write, increment key, and return
+            State.write(self.data['GLRG'][region][data_type], addr, data)
+            #self.keys['GLRG'][region][data_type] += 1
+            #return (self.keys['GLRG'][region][data_type], True)
+            return (1, True)
+
+    # pickle and unpickle state
     def save(self, filename):
         with self.lock:
             with open(filename, 'wb') as f:

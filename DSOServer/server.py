@@ -56,6 +56,27 @@ class ThreadedTCPRequestHandler(BaseRequestHandler):
         #hexdump(pkt)
         self.request.sendall(pkt)
 
+    def sendSlotResults(self, player):
+        # 'dsIN', 4 bytes myPermId, 4x1 byte slot permission levels
+        # perm. id >= 0x80000000 gives "No host response"
+        response = bytes('dsIN', 'ascii') + self.player.id.to_bytes(4, 'little')
+        for i in range(4):
+            response += bytes( [self.player.get_perm(i)] )
+
+        # currently selected name
+        response += encodeString(self.player.get_name(self.player.get_slot()))
+
+        # all 4 player names w/ flag
+        for i in range(4):
+            response += self.player.get_flag(i).to_bytes(4, 'little') + encodeString(self.player.get_name(i))
+
+        # "Process ID"
+        response += getpid().to_bytes(4, 'little')
+
+        #self.logger.debug("Sending TEN Init response")
+        #hexdump(response)
+        self.sendPacket(response)
+
     def setup(self):
         self.logger = logger.getChild("{}:{}".format(*self.client_address))
         self.player = None
@@ -101,25 +122,8 @@ class ThreadedTCPRequestHandler(BaseRequestHandler):
                 # If the user is already logged in, respond 'dsNI' instead
                 #response = bytes('dsNI', 'ascii')
 
-                # 'dsIN', 4 bytes myPermId, 4x1 byte slot permission levels
-                # perm. id >= 0x80000000 gives "No host response"
-                response = bytes('dsIN', 'ascii') + self.player.id.to_bytes(4, 'little')
-                for i in range(4):
-                    response += bytes( [self.player.get_perm(i)] )
+                self.sendSlotResults(self.player)
 
-                # currently selected name
-                response += encodeString(self.player.get_name(self.player.get_slot()))
-
-                # all 4 player names w/ flag
-                for i in range(4):
-                    response += self.player.get_flag(i).to_bytes(4, 'little') + encodeString(self.player.get_name(i))
-
-                # "Process ID"
-                response += getpid().to_bytes(4, 'little')
-
-                self.logger.debug("Sending TEN Init response")
-                hexdump(response)
-                self.sendPacket(response)
 
             elif id == 'DSLG':
                 # client uploading logs to us
@@ -141,26 +145,12 @@ class ThreadedTCPRequestHandler(BaseRequestHandler):
                 # Client name selection - they want to change the current Slot
                 assert len(payload) == 4
                 slot_id = int.from_bytes(payload[0:4], byteorder='little')
-                self.logger.info("Received Name Selection: %d", slot_id)
+                self.logger.info("Received New Slot Choice: %d", slot_id)
 
                 self.player.set_slot(slot_id)
 
                 # give back the player info struct again
-
-                response = bytes('dsIN', 'ascii') + self.player.id.to_bytes(4, 'little')
-                for i in range(4):
-                    response += bytes( [self.player.get_perm(i)] )
-
-                response += encodeString(self.player.get_name(self.player.get_slot()))
-                # 4 player names w/ flag
-                for i in range(4):
-                    response += self.player.get_flag(i).to_bytes(4, 'little') + encodeString(self.player.get_name(i))
-
-                # "Process ID"
-                response += getpid().to_bytes(4, 'little')
-
-                self.logger.debug("Sending dsIN response to that")
-                self.sendPacket(response)
+                self.sendSlotResults(self.player)
 
             elif id == 'DSPS':
                 # Client "set position"
@@ -171,6 +161,10 @@ class ThreadedTCPRequestHandler(BaseRequestHandler):
                 y = int.from_bytes(payload[12:16], byteorder='little')
                 reg = int.from_bytes(payload[16:20], byteorder='little')
                 self.logger.info("Received Set Position for %d (type %d): (x=%d, y=%d, reg=%d)", perm_id, unknown, x, y, reg)
+
+                #response = bytes('dsPS', 'ascii') + perm_id.to_bytes(4, 'little') + unknown.to_bytes(4, 'little') + x.to_bytes(4, 'little') + y.to_bytes(4, 'little') + reg.to_bytes(4, 'little')
+                #self.sendPacket(response)
+
 
             elif id == 'DSDT':
                 # Client requesting Host Date
@@ -227,9 +221,9 @@ class ThreadedTCPRequestHandler(BaseRequestHandler):
                 assert len(payload) == 8
                 perm_id = int.from_bytes(payload[0:4], byteorder='little')
                 region_id = int.from_bytes(payload[4:8], byteorder='little')
+                self.logger.info("Received Region Info request, perm_id=%d rgn=%d", perm_id, region_id)
 
-                # 
-                response = bytes('dsRI', 'ascii') + perm_id.to_bytes(4, 'little') + region_id.to_bytes(4, 'little') + (2).to_bytes(4, 'little') + perm_id.to_bytes(4, 'little') + (12345).to_bytes(4, 'little')
+                # response = bytes('dsRI', 'ascii') + perm_id.to_bytes(4, 'little') + region_id.to_bytes(4, 'little') + (2).to_bytes(4, 'little') + perm_id.to_bytes(4, 'little') + (12345).to_bytes(4, 'little')
                 response = bytes('dsRI', 'ascii') + perm_id.to_bytes(4, 'little') + region_id.to_bytes(4, 'little') + (1).to_bytes(4, 'little') + perm_id.to_bytes(4, 'little')
                 self.sendPacket(response)
 
@@ -241,90 +235,111 @@ class ThreadedTCPRequestHandler(BaseRequestHandler):
                 assert len(payload) == 24
                 perm_id = int.from_bytes(payload[0:4], byteorder='little')
                 rd_block = str(payload[4:8], 'ascii')
-
-                # read of "shared" memory section, either "global" or "region"-specific
-                #  there are numbered datatypes under each (e.g. each region is a different dtype)
-                rd_dtype = int.from_bytes(payload[8:12], byteorder='little')
-                #  "key" is an ID for the client's request, maybe for sequencing?
-                rd_key = int.from_bytes(payload[12:16], byteorder='little')
+                rd_index1 = int.from_bytes(payload[8:12], byteorder='little')
+                rd_index2 = int.from_bytes(payload[12:16], byteorder='little')
                 #  address and length of data block to read
                 rd_addr = int.from_bytes(payload[16:20], byteorder='little')
-                rd_len = int.from_bytes(payload[20:24], byteorder='little')
+                rd_len = int.from_bytes(payload[20:24], 'little')
 
-                self.logger.info("Received 'Read' (block=%s) request from %d: (dtype=%d, key=%d, addr=%d, len=%d)", rd_block, perm_id, rd_dtype, rd_key, rd_addr, rd_len)
+                self.logger.info("Received 'Read' (block=%s) request from %d: (index1=%d, index2=%d, addr=%d, len=%d)", rd_block, perm_id, rd_index1, rd_index2, rd_addr, rd_len)
+                if rd_block == 'GLOB':
+                    # read of "global" shared memory area - things like high score tables, etc
+                    #  each type is numbered differently, there are 0x16 of them
+                    assert rd_index2 == 0
 
-                if rd_block == 'GLOB' or rd_block == 'GLRG':
                     # send bytes back by getting them from the global state holder
-                    block = state.read(rd_block, rd_dtype, rd_addr, rd_len)
-                    #hexdump(block)
+                    key, block = state.read_glob(rd_index1, rd_addr, rd_len)
 
-                    # the "0" here is used for fragmenting responses, a thing we don't care to do
-                    response = bytes('dsRD', 'ascii') + perm_id.to_bytes(4, 'little') + bytes(rd_block, 'ascii')+ rd_dtype.to_bytes(4, 'little') + (0).to_bytes(4, 'little') + (rd_key + 1).to_bytes(4, 'little') + rd_addr.to_bytes(4, 'little') + rd_len.to_bytes(4, 'little') + block
+                elif rd_block == 'GLRG':
+                    # read of "region" shared memory area - things like objects, items, etc
+                    # data type, 0-5 or so (actually client usually requests 6?  weird)
+                    key, block = state.read_glrg(rd_index1, rd_index2, rd_addr, rd_len)
 
                 elif rd_block == 'PCSA':
+                    # Player save file info.  These don't have multiple subsections.  Also you should only read your own data.
+                    assert rd_index1 == 0
+                    assert rd_index2 == 0
+                    #  address and length of data block to read
+                    key = 1
                     block = self.player.read(rd_addr, rd_len)
-                    #hexdump(block)
-                    response = bytes('dsRD', 'ascii') + perm_id.to_bytes(4, 'little') + bytes(rd_block, 'ascii')+ rd_dtype.to_bytes(4, 'little') + (0).to_bytes(4, 'little') + (rd_key + 1).to_bytes(4, 'little') + rd_addr.to_bytes(4, 'little') + rd_len.to_bytes(4, 'little') + block
 
                 elif rd_block == 'PCIN' or rd_block == 'PCOU' or rd_block == 'PCQK':
+                    # read of "global" shared memory area - things like high score tables, etc
+                    #  each type is numbered differently, there are 0x16 of them
+                    # Stub these in for now with all-0
+                    key = 1
                     block = bytes(rd_len)
-                    #hexdump(block)
-                    response = bytes('dsRD', 'ascii') + perm_id.to_bytes(4, 'little') + bytes(rd_block, 'ascii')+ rd_dtype.to_bytes(4, 'little') + (0).to_bytes(4, 'little') + (rd_key + 1).to_bytes(4, 'little') + rd_addr.to_bytes(4, 'little') + rd_len.to_bytes(4, 'little') + block
 
+                else:
+                    assert False
 
+                response = bytes('dsRD', 'ascii') + perm_id.to_bytes(4, 'little') + bytes(rd_block, 'ascii')+ rd_index1.to_bytes(4, 'little') + rd_index2.to_bytes(4, 'little') + key.to_bytes(4, 'little') + rd_addr.to_bytes(4, 'little') + rd_len.to_bytes(4, 'little') + block
                 self.sendPacket(response)
+
+            elif id == 'DSWQ':
+                # Client making a Write Request of some shared memory segment, GLOB or GLRG.
+                #  Since this could be contentious, it expects back a dsWT (write OK)
+                #  or a dsWE (write Error)
+                # The client calls this a "useBroadcast" write
+                perm_id = int.from_bytes(payload[0:4], byteorder='little')
+                wt_block = str(payload[4:8], 'ascii')
+                wt_index1 = int.from_bytes(payload[8:12], byteorder='little')
+                wt_index2 = int.from_bytes(payload[12:16], byteorder='little')
+                # key SHOULD likely be used to resolve race conditions, but it's always 0 in 1.0
+                wt_key = int.from_bytes(payload[16:20], byteorder='little')
+                assert wt_key == 0
+                #  address and length of data block to write
+                wt_addr = int.from_bytes(payload[20:24], byteorder='little')
+                wt_len = int.from_bytes(payload[24:28], 'little')
+                assert wt_len == len(payload[28:])
+                self.logger.info("Received 'Write Broadcast' (block=%s) request from %d: (index1=%d, index2=%d, key=%d, addr=%d, len=%d)", wt_block, perm_id, wt_index1, wt_index2, wt_key, wt_addr, wt_len)
+
+                if wt_block == 'GLOB':
+                    # write of "global" shared memory area - should never have an index2 set
+                    assert wt_index2 == 0
+                    key, success = state.write_glob(wt_index1, wt_key, wt_addr, payload[28:])
+                elif wt_block == 'GLRG':
+                    # write of "region" shared memory area
+                    key, success = state.write_glrg(wt_index1, wt_index2, wt_key, wt_addr, payload[28:])
+                else:
+                    assert False
+
+                # ack or nack this
+                if success:
+                    response = bytes('dsWT', 'ascii')
+                else:
+                    response = bytes('dsWE', 'ascii')
+
+                response += perm_id.to_bytes(4, 'little') + bytes(wt_block, 'ascii') + wt_index1.to_bytes(4, 'little') + wt_index2.to_bytes(4, 'little') + key.to_bytes(4, 'little') + wt_len.to_bytes(4, 'little')
+                self.sendPacket(response)
+
 
             elif id == 'DSWT':
                 # Client making a Write Request of something
                 #  There are different types of things to Write:
-                #  PCSA (save), GLRG (region?), GLOB (global?), and PCQK
-                # but they all start with an ID...
-                #self.logger.debug("Packet received (len=%d, id=%s, payload=%s)", len(payload), id, payload)
-                #hexdump(payload)
-
+                #  PCSA (save), PCQK, PCIN and PCOU
                 perm_id = int.from_bytes(payload[0:4], byteorder='little')
                 wt_block = str(payload[4:8], 'ascii')
+                wt_index1 = int.from_bytes(payload[8:12], byteorder='little')
+                wt_index2 = int.from_bytes(payload[12:16], byteorder='little')
+                # key SHOULD likely be used to resolve race conditions, but it's always 0 in 1.0
+                wt_key = int.from_bytes(payload[16:20], byteorder='little')
+                assert wt_key == 0
+                #  address and length of data block to write
+                wt_addr = int.from_bytes(payload[20:24], byteorder='little')
+                wt_len = int.from_bytes(payload[24:28], 'little')
+                assert wt_len == len(payload[28:])
 
-                if wt_block == 'PCQK':
-                    # unknown queue area
-                    wt_unk1 = int.from_bytes(payload[8:12], 'little')
-                    wt_unk2 = int.from_bytes(payload[12:16], 'little')
-                    wt_unk3 = int.from_bytes(payload[16:20], 'little')
-                    wt_addr = int.from_bytes(payload[20:24], 'little')
-                    wt_len = int.from_bytes(payload[24:28], 'little')
-                    assert wt_len == len(payload[28:])
-                    self.logger.info("Received 'Write' (block=%s) request from %d: (unk1=%d, unk2=%d, unk3=%d, addr=%d, len=%d)", wt_block, perm_id, wt_unk1, wt_unk2, wt_unk3, wt_addr, wt_len)
-                    hexdump(payload[28:])
-                    
-                elif wt_block == 'PCSA':
-                    # trying to save character
-                    wt_unk1 = int.from_bytes(payload[8:12], 'little')
-                    wt_unk2 = int.from_bytes(payload[12:16], 'little')
-                    wt_unk3 = int.from_bytes(payload[16:20], 'little')
-                    wt_addr = int.from_bytes(payload[20:24], 'little')
-                    wt_len = int.from_bytes(payload[24:28], 'little')
-                    assert wt_len == len(payload[28:])
-                    self.logger.info("Received 'Write' (block=%s) request from %d: (unk1=%d, unk2=%d, unk3=%d, addr=%d, len=%d)", wt_block, perm_id, wt_unk1, wt_unk2, wt_unk3, wt_addr, wt_len)
-                    hexdump(payload[28:])
+                self.logger.info("Received 'Write Player Char' (block=%s) request from %d: (index1=%d, index2=%d, key=%d, addr=%d, len=%d)", wt_block, perm_id, wt_index1, wt_index2, wt_key, wt_addr, wt_len)
 
+                if wt_block == 'PCSA':
+                    # trying to save character - everything is ignored except the address and payload
+                    assert wt_index1 == 0
+                    assert wt_index2 == 0
                     self.player.write(wt_addr, payload[28:])
 
                 else:
-                    self.logger.debug("Packet received (len=%d, id=%s, payload=%s)", len(payload), id, payload)
-                    block = self.player.read(rd_addr, rd_len)
                     hexdump(payload)
-
-                # send dummy bytes back
-                #response = bytes('dsWT', 'ascii') + perm_id.to_bytes(4, 'little') + bytes(rd_block, 'ascii')
-                #if rd_block == 'PCSA':
-                    # truncate it for now
-                    #response += (0).to_bytes(8, 'little')
-                    #response += (0).to_bytes(8, 'little')
-                    #response = bytes('dsRD', 'ascii') + perm_id.to_bytes(4, 'little') + bytes(rd_block, 'ascii') + rd_key.to_bytes(4, 'little') + rd_dtype.to_bytes(4, 'little') + rd_addr.to_bytes(4, 'little') + (rd_len - 1).to_bytes(4, 'little') + bytes([0 for i in range(rd_len)])
-                #else:
-                    #state.write(rd_block, rd_dtype, rd_addr, payload[28:])
-                    #response += rd_dtype.to_bytes(4, 'little') + (0).to_bytes(4, 'little') + (rd_key + 1).to_bytes(4, 'little') + rd_addr.to_bytes(4, 'little') + rd_len.to_bytes(4, 'little')
-                #self.sendPacket(response)
 
 
             else:
@@ -335,9 +350,9 @@ class ThreadedTCPRequestHandler(BaseRequestHandler):
     def finish(self):
         # try dsCL see if we can get them to drop
         if self.player:
+            self.player.save('player.pickle')
             response = bytes('dsCL', 'ascii') + self.player.id.to_bytes(4, 'little')
             self.sendPacket(response)
-            self.player.save('player.pickle')
 
 
 def run(argv):
