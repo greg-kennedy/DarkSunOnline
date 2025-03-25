@@ -1,5 +1,4 @@
 import socket
-import struct
 import logging
 from os import getpid
 from time import time
@@ -19,8 +18,10 @@ logger = logging.getLogger(__name__)
 
 state = State()
 
+
 def to_printable_ascii(byte):
     return chr(byte) if 32 <= byte <= 126 else "."
+
 
 def hexdump(data: bytes):
     offset = 0
@@ -31,8 +32,10 @@ def hexdump(data: bytes):
         print(f"{offset:08x}  {hex_values:<48}  |{ascii_values}|")
         offset += 16
 
+
 def encodeString(string):
     return (len(string) + 1).to_bytes(4, 'little') + bytes(string, 'ascii') + bytes(1)
+
 
 def decodeString(data):
     length = int.from_bytes(data[0:4], byteorder='little')
@@ -248,12 +251,12 @@ class ThreadedTCPRequestHandler(BaseRequestHandler):
                     assert rd_index2 == 0
 
                     # send bytes back by getting them from the global state holder
-                    key, block = state.read_glob(rd_index1, rd_addr, rd_len)
+                    block = state.read_glob(rd_index1, rd_addr, rd_len)
 
                 elif rd_block == 'GLRG':
                     # read of "region" shared memory area - things like objects, items, etc
                     # data type, 0-5 or so (actually client usually requests 6?  weird)
-                    key, block = state.read_glrg(rd_index1, rd_index2, rd_addr, rd_len)
+                    block = state.read_glrg(rd_index1, rd_index2, rd_addr, rd_len)
 
                 elif rd_block == 'PCSA':
                     # Player save file info.  These don't have multiple subsections.  Also you should only read your own data.
@@ -297,10 +300,10 @@ class ThreadedTCPRequestHandler(BaseRequestHandler):
                 if wt_block == 'GLOB':
                     # write of "global" shared memory area - should never have an index2 set
                     assert wt_index2 == 0
-                    key, success = state.write_glob(wt_index1, wt_key, wt_addr, payload[28:])
+                    success = state.write_glob(wt_index1, wt_addr, payload[28:])
                 elif wt_block == 'GLRG':
                     # write of "region" shared memory area
-                    key, success = state.write_glrg(wt_index1, wt_index2, wt_key, wt_addr, payload[28:])
+                    success = state.write_glrg(wt_index1, wt_index2, wt_addr, payload[28:])
                 else:
                     assert False
 
@@ -310,6 +313,7 @@ class ThreadedTCPRequestHandler(BaseRequestHandler):
                 else:
                     response = bytes('dsWE', 'ascii')
 
+                key = 1
                 response += perm_id.to_bytes(4, 'little') + bytes(wt_block, 'ascii') + wt_index1.to_bytes(4, 'little') + wt_index2.to_bytes(4, 'little') + key.to_bytes(4, 'little') + wt_len.to_bytes(4, 'little')
                 self.sendPacket(response)
 
