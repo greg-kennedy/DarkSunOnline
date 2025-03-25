@@ -1,103 +1,83 @@
 from threading import Lock
 from pickle import dump, load
 
+
 class State:
 
-    def __init__(self, filename=None):
+    def __init__(self):
         # TODO: Would be nice if we could lock only certain segments, instead of the entire world
-        self.lock = Lock()
+        self.__lock = Lock()
+        self.__data = {'GLOB': {}, 'GLRG': {}}
 
-        with self.lock:
-            self.data = {'GLOB': {}, 'GLRG': {}}
-            #self.keys = {'GLOB': {}, 'GLRG': {}}
-
-        if filename:
-            self.load(filename)
-
+    # #########################################################################
     # static method to read from a list and return, adding empty bytes as needed
-    def read(block, addr, length):
+    def __read(block, addr, length):
         addrlen = addr + length
         shortage = addrlen - len(block)
         if shortage > 0:
             # zero-fill to reach addr + len
-            block += bytes(shortage)
+            block.extend(bytearray(shortage))
 
-        return block[addr:addrlen]
+        return bytes(block[addr:addrlen])
 
+    # Read from GLOBal memory
     def read_glob(self, data_type, addr, length):
-        with self.lock:
-            if data_type not in self.data['GLOB']:
-                self.data['GLOB'][data_type] = bytes()
-                #self.keys['GLOB'][data_type] = 1
+        with self.__lock:
+            if data_type not in self.__data['GLOB']:
+                self.__data['GLOB'][data_type] = bytearray()
 
-            #return (self.keys['GLOB'][data_type], State.read(self.data['GLOB'][data_type], addr, length))
-            return (1, State.read(self.data['GLOB'][data_type], addr, length))
+            return State.__read(self.__data['GLOB'][data_type], addr, length)
 
+    # Read from glReGional memory
     def read_glrg(self, region, data_type, addr, length):
-        with self.lock:
-            if region not in self.data['GLRG']:
-                self.data['GLRG'][region] = {}
-                #self.keys['GLRG'][region] = {}
-            if data_type not in self.data['GLRG'][region]:
-                self.data['GLRG'][region][data_type] = bytes()
-                #self.keys['GLRG'][region][data_type] = 1
+        with self.__lock:
+            if region not in self.__data['GLRG']:
+                self.__data['GLRG'][region] = {}
+            if data_type not in self.__data['GLRG'][region]:
+                self.__data['GLRG'][region][data_type] = bytearray()
 
-            #return (self.keys['GLRG'][region][data_type], State.read(self.data['GLRG'][region][data_type], addr, length))
-            return (1, State.read(self.data['GLRG'][region][data_type], addr, length))
+            return State.__read(self.__data['GLRG'][region][data_type], addr, length)
 
-    #### WRITE to global memory
-    def write(block, addr, data):
+    # #########################################################################
+    # WRITE to global memory
+    def __write(block, addr, data):
         addrlen = addr + len(data)
         shortage = addrlen - len(block)
         if shortage > 0:
             # zero-fill to reach addr + len
-            block += bytes(shortage)
+            block.extend(bytearray(shortage))
 
-        block = block[:addr] + data + block[addrlen:]
+        block[addr:addrlen] = data
 
-    def write_glob(self, key, data_type, addr, data):
-        with self.lock:
-            if data_type not in self.data['GLOB']:
-                self.data['GLOB'][data_type] = bytes()
-                #self.keys['GLOB'][data_type] = 1
+    def write_glob(self, data_type, addr, data):
+        with self.__lock:
+            if data_type not in self.__data['GLOB']:
+                self.__data['GLOB'][data_type] = bytearray()
 
-            # reject write if incoming key does not match expected key
-            #if key != self.keys['GLOB'][data_type]:
-                #return (self.keys['GLOB'][data_type], False)
+            # accept write and return
+            State.__write(self.__data['GLOB'][data_type], addr, data)
 
-            # accept write, increment key, and return
-            State.write(self.data['GLOB'][data_type], addr, data)
-            #self.keys['GLOB'][data_type] += 1
-            #return (self.keys['GLOB'][data_type], True)
-            return (1, True)
+            return True
 
-    def write_glrg(self, key, region, data_type, addr, length):
-        with self.lock:
-            if region not in self.data['GLRG']:
-                self.data['GLRG'][region] = {}
-                #self.keys['GLRG'][region] = {}
-            if data_type not in self.data['GLRG'][region]:
-                self.data['GLRG'][region][data_type] = bytes()
-                #self.keys['GLRG'][region][data_type] = 1
+    def write_glrg(self, region, data_type, addr, data):
+        with self.__lock:
+            if region not in self.__data['GLRG']:
+                self.__data['GLRG'][region] = {}
+            if data_type not in self.__data['GLRG'][region]:
+                self.__data['GLRG'][region][data_type] = bytearray()
 
-            # reject write if incoming key does not match expected key
-            #  This doesn't seem to actually occur, so comment it out
-            #if key != self.keys['GLRG'][region][data_type]:
-                #return (self.keys['GLRG'][region][data_type], False)
+            # accept write and return
+            State.__write(self.__data['GLRG'][region][data_type], addr, data)
+            return True
 
-            # accept write, increment key, and return
-            State.write(self.data['GLRG'][region][data_type], addr, data)
-            #self.keys['GLRG'][region][data_type] += 1
-            #return (self.keys['GLRG'][region][data_type], True)
-            return (1, True)
-
+    # #########################################################################
     # pickle and unpickle state
     def save(self, filename):
-        with self.lock:
+        with self.__lock:
             with open(filename, 'wb') as f:
-                dump(self.data, f)
+                dump(self.__data, f)
 
     def load(self, filename):
-        with self.lock:
+        with self.__lock:
             with open(filename, 'rb') as f:
-                self.data = load(f)
+                self.__data = load(f)
