@@ -7,7 +7,7 @@ from socketserver import ThreadingTCPServer, BaseRequestHandler
 
 from .compression import RLECompress, RLEUncompress
 from .state import State
-from .player import Player
+from .player import Players
 
 # listen on any interface, port 14902
 HOST = ''
@@ -17,6 +17,7 @@ logging.basicConfig(level=logging.NOTSET)
 logger = logging.getLogger(__name__)
 
 state = State()
+players = Players()
 
 
 def to_printable_ascii(byte):
@@ -33,6 +34,31 @@ def hexdump(data: bytes):
         offset += 16
 
 
+# TODO this probably isn't thread-safe since it gets a bunch of info
+def buildSlotResults(perm_id):
+    # 'dsIN', 4 bytes myPermId, 4x1 byte slot permission levels
+    # perm. id >= 0x80000000 gives "No host response"
+    player = players[perm_id]
+
+    response = bytes('dsIN', 'ascii') + perm_id.to_bytes(4, 'little')
+    for i in range(4):
+        response += bytes( [player.get_perm(i)] )
+
+    # currently selected name
+    response += encodeString(player.get_name(player.get_slot()))
+
+    # all 4 player names w/ flag
+    for i in range(4):
+        response += player.get_flag(i).to_bytes(4, 'little') + encodeString(player.get_name(i))
+
+    # "Process ID"
+    response += getpid().to_bytes(4, 'little')
+
+    #self.logger.debug("Sending TEN Init response")
+    #hexdump(response)
+    return response
+
+
 def encodeString(string):
     return (len(string) + 1).to_bytes(4, 'little') + bytes(string, 'ascii') + bytes(1)
 
@@ -44,6 +70,7 @@ def decodeString(data):
     # check null-terminator
     assert data[-1] == 0
     return str(data[4:-1], 'ascii')
+
 
 class ThreadedTCPRequestHandler(BaseRequestHandler):
     # helper to send a packet to the connected client
@@ -59,26 +86,6 @@ class ThreadedTCPRequestHandler(BaseRequestHandler):
         #hexdump(pkt)
         self.request.sendall(pkt)
 
-    def sendSlotResults(self, player):
-        # 'dsIN', 4 bytes myPermId, 4x1 byte slot permission levels
-        # perm. id >= 0x80000000 gives "No host response"
-        response = bytes('dsIN', 'ascii') + self.player.id.to_bytes(4, 'little')
-        for i in range(4):
-            response += bytes( [self.player.get_perm(i)] )
-
-        # currently selected name
-        response += encodeString(self.player.get_name(self.player.get_slot()))
-
-        # all 4 player names w/ flag
-        for i in range(4):
-            response += self.player.get_flag(i).to_bytes(4, 'little') + encodeString(self.player.get_name(i))
-
-        # "Process ID"
-        response += getpid().to_bytes(4, 'little')
-
-        #self.logger.debug("Sending TEN Init response")
-        #hexdump(response)
-        self.sendPacket(response)
 
     def setup(self):
         self.logger = logger.getChild("{}:{}".format(*self.client_address))
@@ -120,12 +127,12 @@ class ThreadedTCPRequestHandler(BaseRequestHandler):
 
                 # TODO: load player object from disk
                 #  for now we create a dummy one
-                self.player = Player(0x0BADCAFE, 'player.pickle')
+                self.player = players.add_player('Player')
 
                 # If the user is already logged in, respond 'dsNI' instead
                 #response = bytes('dsNI', 'ascii')
 
-                self.sendSlotResults(self.player)
+                self.sendPacket(buildSlotResults(self.player))
 
 
             elif id == 'DSLG':
@@ -150,10 +157,10 @@ class ThreadedTCPRequestHandler(BaseRequestHandler):
                 slot_id = int.from_bytes(payload[0:4], byteorder='little')
                 self.logger.info("Received New Slot Choice: %d", slot_id)
 
-                self.player.set_slot(slot_id)
+                players[self.player].set_slot(slot_id)
 
                 # give back the player info struct again
-                self.sendSlotResults(self.player)
+                self.sendPacket(buildSlotResults(self.player))
 
             elif id == 'DSPS':
                 # Client "set position"
@@ -165,8 +172,11 @@ class ThreadedTCPRequestHandler(BaseRequestHandler):
                 reg = int.from_bytes(payload[16:20], byteorder='little')
                 self.logger.info("Received Set Position for %d (type %d): (x=%d, y=%d, reg=%d)", perm_id, unknown, x, y, reg)
 
-                #response = bytes('dsPS', 'ascii') + perm_id.to_bytes(4, 'little') + unknown.to_bytes(4, 'little') + x.to_bytes(4, 'little') + y.to_bytes(4, 'little') + reg.to_bytes(4, 'little')
-                #self.sendPacket(response)
+                players[self.player].set_position(x, y, reg)
+
+                # the "response" is a collected list of positions, where "1" is the count and then the payloads are from each other packet
+                response = bytes('dsPS', 'ascii') + perm_id.to_bytes(4, 'little') + (1).to_bytes(4, 'little') + perm_id.to_bytes(4, 'little') + unknown.to_bytes(4, 'little') + x.to_bytes(4, 'little') + y.to_bytes(4, 'little') + reg.to_bytes(4, 'little')
+                self.sendPacket(response)
 
 
             elif id == 'DSDT':
@@ -189,10 +199,10 @@ class ThreadedTCPRequestHandler(BaseRequestHandler):
                 # Client making a "Read Seed" request
                 assert len(payload) == 8
                 perm_id = int.from_bytes(payload[0:4], byteorder='little')
-                seed_id = int.from_bytes(payload[4:8], byteorder='little')
-                self.logger.info("Received 'Read Seed' (%d) request from %d", seed_id, perm_id)
+                slot_id = int.from_bytes(payload[4:8], byteorder='little')
+                self.logger.info("Received 'Read Seed' (%d) request from %d", slot_id, perm_id)
 
-                response = bytes('dsRS', 'ascii') + perm_id.to_bytes(4, 'little') + seed_id.to_bytes(4, 'little') + self.player.get_seed(seed_id).to_bytes(4, 'little')
+                response = bytes('dsRS', 'ascii') + perm_id.to_bytes(4, 'little') + slot_id.to_bytes(4, 'little') + players[self.player].get_seed(slot_id).to_bytes(4, 'little')
                 self.sendPacket(response)
 
             elif id == 'DSRL':
@@ -202,7 +212,7 @@ class ThreadedTCPRequestHandler(BaseRequestHandler):
                 slot_id = int.from_bytes(payload[4:8], byteorder='little')
                 self.logger.info("Received 'Roll Dice' request from %d:%d", perm_id, slot_id)
 
-                response = bytes('dsRL', 'ascii') + perm_id.to_bytes(4, 'little') + slot_id.to_bytes(4, 'little') + self.player.inc_seed(slot_id).to_bytes(4, 'little')
+                response = bytes('dsRL', 'ascii') + perm_id.to_bytes(4, 'little') + slot_id.to_bytes(4, 'little') + players[self.player].inc_seed(slot_id).to_bytes(4, 'little')
                 self.sendPacket(response)
 
             elif id == 'DSNM':
@@ -213,7 +223,7 @@ class ThreadedTCPRequestHandler(BaseRequestHandler):
 
                 # TODO: We always approve names now, but it would be good to know
                 #  which packet indicates "name no good" (dsNO?  dsNR?)
-                self.player.set_name(slot_id, name)
+                players[self.player].set_name(slot_id, name)
 
                 # the client also complains if you ack a 0-byte name, so we should not do that either
                 response = bytes('dsNM', 'ascii') + slot_id.to_bytes(4, 'little') + encodeString(name)
@@ -226,8 +236,13 @@ class ThreadedTCPRequestHandler(BaseRequestHandler):
                 region_id = int.from_bytes(payload[4:8], byteorder='little')
                 self.logger.info("Received Region Info request, perm_id=%d rgn=%d", perm_id, region_id)
 
-                # response = bytes('dsRI', 'ascii') + perm_id.to_bytes(4, 'little') + region_id.to_bytes(4, 'little') + (2).to_bytes(4, 'little') + perm_id.to_bytes(4, 'little') + (12345).to_bytes(4, 'little')
-                response = bytes('dsRI', 'ascii') + perm_id.to_bytes(4, 'little') + region_id.to_bytes(4, 'little') + (1).to_bytes(4, 'little') + perm_id.to_bytes(4, 'little')
+                ids = players.ids_in_region(region_id)
+                self.logger.info(" There are " + str(len(ids)) + " players in region: " + str(ids))
+
+                response = bytes('dsRI', 'ascii') + perm_id.to_bytes(4, 'little') + region_id.to_bytes(4, 'little') + (-len(ids)).to_bytes(4, 'little', signed=True)
+                for i in ids:
+                    response += i.to_bytes(4, 'little')
+
                 self.sendPacket(response)
 
             elif id == 'DSRD':
@@ -264,14 +279,15 @@ class ThreadedTCPRequestHandler(BaseRequestHandler):
                     assert rd_index2 == 0
                     #  address and length of data block to read
                     key = 1
-                    block = self.player.read(rd_addr, rd_len)
+                    block = players[self.player].read('PCSA', rd_addr, rd_len)
 
                 elif rd_block == 'PCIN' or rd_block == 'PCOU' or rd_block == 'PCQK':
                     # read of "global" shared memory area - things like high score tables, etc
                     #  each type is numbered differently, there are 0x16 of them
                     # Stub these in for now with all-0
+                    assert rd_index2 == 0
                     key = 1
-                    block = bytes(rd_len)
+                    block = players[rd_index1].read(rd_block, rd_addr, rd_len)
 
                 else:
                     assert False
@@ -340,7 +356,14 @@ class ThreadedTCPRequestHandler(BaseRequestHandler):
                     # trying to save character - everything is ignored except the address and payload
                     assert wt_index1 == 0
                     assert wt_index2 == 0
-                    self.player.write(wt_addr, payload[28:])
+                    players[self.player].write('PCSA', wt_addr, payload[28:])
+
+                elif wt_block == 'PCIN' or wt_block == 'PCOU' or wt_block == 'PCQK':
+                    # trying to write to someone's 'outbox'
+                    if (wt_index1 == 0):
+                        wt_index1 = self.player
+                    assert wt_index2 == 0
+                    players[wt_index1].write(wt_block, wt_addr, payload[28:])
 
                 else:
                     hexdump(payload)
@@ -354,14 +377,20 @@ class ThreadedTCPRequestHandler(BaseRequestHandler):
     def finish(self):
         # try dsCL see if we can get them to drop
         if self.player:
-            self.player.save('player.pickle')
-            response = bytes('dsCL', 'ascii') + self.player.id.to_bytes(4, 'little')
+            players[self.player].save('player.pickle')
+            response = bytes('dsCL', 'ascii') + self.player.to_bytes(4, 'little')
             self.sendPacket(response)
 
 
 def run(argv):
     ThreadingTCPServer.allow_reuse_address = True
     server = ThreadingTCPServer((HOST, PORT), ThreadedTCPRequestHandler)
+    try:
+        state.load('world.pickle')
+    except FileNotFoundError:
+        logger.info("Did not find existing world to resume")
+
     with server:
         # run until ctrl+C pressed
         server.serve_forever()
+    state.save('world.pickle')
