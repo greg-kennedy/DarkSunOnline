@@ -1,0 +1,38 @@
+#include <ver.h>
+
+/* Executable version information */
+#define LAUNCHER_VER     1,0,0,0
+#define LAUNCHER_VER_STR "1.0.0.0\0"
+
+VS_VERSION_INFO    VERSIONINFO DISCARDABLE
+FILEVERSION        LAUNCHER_VER
+PRODUCTVERSION     LAUNCHER_VER
+FILEFLAGSMASK      VS_FFI_FILEFLAGSMASK
+#ifdef _DEBUG
+  FILEFLAGS        VS_FF_DEBUG | VS_FF_PRERELEASE
+#else
+  FILEFLAGS        0
+#endif
+FILEOS             VOS_DOS_WINDOWS16
+FILETYPE           VFT_APP
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904E4"
+    BEGIN
+      VALUE "Comments", "https://github.com/greg-kennedy/DarkSunOnline\0"
+      VALUE "CompanyName", "Greg Kennedy\0"
+      VALUE "FileDescription", "Dark Sun Online Launcher\0"
+      VALUE "FileVersion", LAUNCHER_VER_STR
+      VALUE "InternalName", "Launcher\0"
+      VALUE "LegalCopyright", "\2512025 Greg Kennedy\0"
+      VALUE "OriginalFilename", "Launcher.exe\0"
+      VALUE "ProductName", "Dark Sun Online Launcher\0"
+      VALUE "ProductVersion", LAUNCHER_VER_STR
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1252
+  END
+END
