@@ -5,7 +5,19 @@ Reverse engineering the Dark Sun Online: Crimson Sands server
 The rest of this document concerns the purpose and goals of this project.
 
 ## Code
-A work-in-progress replacement server is located in the `DSOServer/` subfolder.  It requires Python 3.  Start the server with `python3 -m DSOServer`.  It listens for connections on TCP port 14902.  Very little is supported beyond sending an initial bogus "init" packet.
+A work-in-progress replacement server is located in the `DSOServer/` subfolder. It requires Python 3. Start the server with `python3 -m DSOServer`. It listens for connections on TCP port 14902.
+
+From here, you would connect to the server using your DSO client. (Only one client at a time for now...) The current tested version is 1.0; others may work, but to varying degrees. Edit your `tenaddr.ini` file to point to the IP of your server - if this is local (same machine), use 127.0.0.1. An example might look like:
+
+```ini
+[tenfe]
+TENFEAVAIL=1
+
+[Darksun]
+ADDRESS=type 'ip' address '192.168.0.2' port '14902' token 'abcd1234'
+```
+
+The `token` value is a unique ID that the login server issues to the client - for now, it is not checked, and you can put basically anything here. Once done you may try launching `MDARK.EXE` and hopefully connect. An easier way to manage `tenaddr.ini` is provided in the `LAUNCHER/` folder, a Win16 application that presents a server browser and triggers the game to execute once logged in.  The username is currently hard-coded to `username` and password `password`, proper login is planned for later.
 
 Some unit tests in the `tests` folder exercise packet RLE compression/decompression: run `pytest` from the root folder to validate the code.
 
@@ -25,18 +37,18 @@ And see also:
 * PaulOfTheWest's [Sol Oscuro project](https://gitea.com/paulofthewest/soloscuro), which is aimed at creating a modern engine for the Dark Sun I and II games - both single-player MS-DOS applications that pre-date the Online version, but share common data formats. This project has mature support for reading .gff files and parsing a number of script / trigger formats, maps, etc.
 
 ## What's Here
-**This repository represents a public, open attempt to reverse-engineer a working server for Dark Sun Online: Crimson Sands.** It aims to provide, first, research into the workings of the server application. Eventually, the goal is to produce a standalone server emulator which original era clients can connect to and play.
+**This repository represents a public, open attempt to reverse-engineer a working server for Dark Sun Online: Crimson Sands.** It aims to provide, first, research into the workings of the client (and theoretical server) application. Eventually, the goal is to produce a standalone server emulator which original era clients can connect to and play.
 
-Currently, there is a Python module which starts a local listening server, allows a client to connect, and prints packets as they are received. It is not possible to do anything besides pass the initial "Loading..." screen, but demonstrates packet capture for analysis.
+Currently, there is a Python module which starts a local listening server, allows a client to connect, and handles some of the packets. Enough support exists for an initial login, character creation, and the ability to start the game and walk around the world a bit. Multiple players do not yet work, nor does combat or much of the other aspects of the game.
 
 As this project is very much in flux, **[the Wiki provides the most in-depth information about the reverse engineering effort](https://github.com/greg-kennedy/DarkSunOnline/wiki)** - please use it to contribute findings about the game, or read more about packet structure and game functionality. As more is discovered about the game, the Wiki should remain up-to-date, and the server can then be built from the collective knowledge.
 
 ## How can I help?
 Any of these tasks are highest priority:
 
-* A key step is **getting reverse engineering tools working on the DSO .exe file**. DSO is a 16-bit Windows application, but during initialization uses [OpenWatcom's 32-bit DPMI code for Win16](https://github.com/open-watcom/owp4v1copy/blob/master/bld/win386/c/wininit.c) to load the 32-bit binary instead. Ghidra and IDA both fail to handle this correctly, decompiling only the 16-bit portions while leaving the meat of the game executable untouched. A way to convert the 32-bit portion into something RE tools can handle is _essential_ to figuring out correct server responses.
-* Figuring out the **packet format** would help. Games typically use a standard format (say, "4 bytes length / 2 bytes type / N bytes payload") throughout - which generally means staring at some binary data until a pattern jumps out.
+* If you know anything about **reverse engineering** and x86 assembly: read the [disassembly notes](https://github.com/greg-kennedy/DarkSunOnline/wiki/Client-Disassembly) to get started analysing the client code. The 1.0 client includes debug symbols (!) incl. function and variable names, which is a huge head start in tracing program flow.
 * There are multiple versions of Dark Sun Online in circulation - beginning with a 1.0 CD-only release, through a timeline with additional features and changes, and culminating in 2.7 (maybe?) during the final days of the service. **We need an archive of client versions,** and some way to track them for uniqueness / versioning / etc. The earliest version includes debug output, while later versions have changes or additional features we'd like to support. The archive could be checked into this repository, but, some sort of curation is needed to manage this project.
+* **Testing** is welcome, though many of the issues are obvious currently ("pressing the Player List button crashes the game") - as more of the bigger gaps are filled in, new edge cases will pop up all the time. Anyone with a memory of playing the game "back in the day" is probably helpful as well, to make sure things work as they used to!
 
 If you'd like to get involved, feel free to edit the Wiki, send PRs with additional information, etc.
 

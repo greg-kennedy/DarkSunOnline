@@ -28,9 +28,9 @@ On exit, settings are written back to the file.
 
 Login
 =====
-When a server is chosen in the drop-down box, the launcher makes a DNS request and then opens a TCP connection to the server.  On success, it sends a single `laHI` ("Host Info") packet to the server, in the same format as other Dark Sun client communication.  The server responds with a string of information to populate the info box.  This can contain anything, but generally is for a server info / MOTD / player count.
+When a server is chosen in the drop-down box, the launcher makes a DNS request and then opens a TCP connection to the server.  On success, it sends a single `LAHI` ("Host Info") packet to the server, in the same format as other Dark Sun client communication.  The server responds with a string of information to populate the info box.  This can contain anything, but generally is for a server info / MOTD / player count.
 
-Once connected, the launcher can send a login request to the server by issuing a `laUP` ("Username Password") packet containing the client credentials.  The server should check these against its store and return either `LANI` ("No Init") with an error message in case of problems (unknown user, incorrect password, already logged in, etc).  Or it may respond with `LAIN` ("Init") and a login token.  The launcher updates `tenaddr.ini` with the corresponding info and then executes `mdark.exe`.  DSO uses the login token to connect to the server.
+Once connected, the launcher can send a login request to the server by issuing a `LAUP` ("Username Password") packet containing the client credentials.  The server should check these against its store and return either `laNO` ("No Init") with an error message in case of problems (unknown user, incorrect password, already logged in, etc).  Or it may respond with `laOK` ("Init OK") and a login token.  The launcher updates `tenaddr.ini` with the corresponding info and then executes `mdark.exe`.  DSO uses the login token to connect to the server.
 
 
 Notes

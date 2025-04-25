@@ -75,10 +75,13 @@ def decodeString(data):
 class ThreadedTCPRequestHandler(BaseRequestHandler):
     # helper to send a packet to the connected client
     #  it tries RLE compression for size reduction, and prepends the length as well
-    def sendPacket(self, data):
-        compressed = RLECompress(data)
-        if len(compressed) < len(data):
-            pkt = ((2 + len(compressed)) | 0x8000).to_bytes(2, 'little') + compressed
+    def sendPacket(self, data, allowCompress = True):
+        if allowCompress:
+            compressed = RLECompress(data)
+            if len(compressed) < len(data):
+                pkt = ((2 + len(compressed)) | 0x8000).to_bytes(2, 'little') + compressed
+            else:
+                pkt = (2 + len(data)).to_bytes(2, 'little') + data
         else:
             pkt = (2 + len(data)).to_bytes(2, 'little') + data
 
@@ -89,6 +92,7 @@ class ThreadedTCPRequestHandler(BaseRequestHandler):
 
     def setup(self):
         self.logger = logger.getChild("{}:{}".format(*self.client_address))
+        self.logger.info("Got new connection")
         self.player = None
 
     # a packet!
@@ -117,7 +121,43 @@ class ThreadedTCPRequestHandler(BaseRequestHandler):
             id, payload = str(payload[0:4], 'ascii'), payload[4:]
 
             #self.logger.debug("Packet received (len=%d, id=%s, payload=%s)", length, id, payload)
-            if id == 'DSIT':
+            # The two supported Launcher commands
+            if id == 'LAHI':
+                self.logger.debug("Received launcher info request")
+
+                info = "==TEN TWO==\r\n\r\nDevelopment DSO server at greg-kennedy.com\r\nTotal players online: who knows?\0"
+
+                response = bytes('laHI', 'ascii') + len(info).to_bytes(4, 'little') + bytes(info, 'ascii')
+
+                self.sendPacket(response, False)
+
+            elif id == 'LAUP':
+                userLen = int.from_bytes(payload[0:4], byteorder='little')
+                assert payload[4 + userLen - 1] == 0
+                username = str(payload[4:4 + userLen - 1], 'ascii')
+
+                passLen = int.from_bytes(payload[4+userLen:4+userLen+4], byteorder='little')
+                assert payload[4 + userLen + 4 + passLen - 1] == 0
+                password = str(payload[4+userLen + 4:4 + userLen + 4 + passLen- 1], 'ascii')
+                self.logger.debug("Received launcher login request (user=" + username + " password=" + password + ")")
+
+                if username != "username":
+                    ok = "laNO"
+                    msg = "Unknown user '" + username + "'\0"
+                elif password != "password":
+                    ok = "laNO"
+                    msg = "Invalid password for user '" + username + "'\0"
+                else:
+                    ok = "laOK"
+                    msg = "abcd1234\0"
+
+                response = bytes(ok, 'ascii') + len(msg).to_bytes(4, 'little') + bytes(msg, 'ascii')
+
+                self.sendPacket(response, False)
+
+            #### GAME COMMANDS
+
+            elif id == 'DSIT':
                 # TEN Init
                 token = decodeString(payload)
                 self.logger.debug("Received TEN Init packet (token=%s)", token)
