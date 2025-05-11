@@ -5,7 +5,9 @@ Reverse engineering the Dark Sun Online: Crimson Sands server
 The rest of this document concerns the purpose and goals of this project.
 
 ## Code
-A work-in-progress replacement server is located in the `DSOServer/` subfolder. It requires Python 3. Start the server with `python3 -m DSOServer`. It listens for connections on TCP port 14902.
+A work-in-progress replacement server is located in the `DSOServer/` subfolder. It requires Python 3. Start the server with `./server.py` (or `python3 server.py`, etc). It listens for connections on TCP port 14902.
+
+The server creates a sqlite3 database on first launch.  Login information (username + password) is stored in a table called `login`, use `manage.py` to edit it or your own preferred sqlite method.
 
 From here, you would connect to the server using your DSO client. (Only one client at a time for now...) The current tested version is 1.0; others may work, but to varying degrees. Edit your `tenaddr.ini` file to point to the IP of your server - if this is local (same machine), use 127.0.0.1. An example might look like:
 
