@@ -173,5 +173,5 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
-# Savegame path
-/save/
+# Savegame files
+server.db

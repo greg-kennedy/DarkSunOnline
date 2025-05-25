@@ -55,3 +55,20 @@ def RLEUncompress(data):
                 count -= 1
 
     return result
+
+
+def EncodeString(string):
+    return (len(string) + 1).to_bytes(4, "little") + bytes(string, "ascii") + bytes(1)
+
+
+def DecodeString(data):
+    length = int.from_bytes(data[0:4], byteorder="little")
+    # check length: 4b msg_length, then message
+    assert len(data) == 4 + length
+    # check null-terminator
+    assert data[4 + length - 1] == 0
+    return str(data[4 : 4 + length - 1], "ascii")
+
+
+def i32(i):
+    return i.to_bytes(4, "little")

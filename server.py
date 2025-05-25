@@ -1,9 +1,21 @@
 #!/bin/env python3
-from argparse import ArgumentParser
-from pathlib import Path
-from DSOServer.server import Server
+
+"""
+DSOServer - reverse engineered Dark Sun Online: Crimson Sands server
+Greg Kennedy, 2025
+
+This software is released under the GNU AGPL 3.0.  See file LICENSE for more information.
+"""
 
 import logging
+from argparse import ArgumentParser
+from pathlib import Path
+
+# need at least one provider for persistent storage
+#  sqlite3 is fine, you could replace this with something else
+from DSOServer.Database import Sqlite3
+# the guts of a running server
+from DSOServer.Server import Server
 
 # Read CLI args we want to use to set up everything
 parser = ArgumentParser(
@@ -25,11 +37,11 @@ parser.add_argument(
     default="",
 )
 parser.add_argument(
-    "-s",
-    "--savepath",
-    help="Path to folder where game state will be saved (default: %(default)s)",
+    "-d",
+    "--database",
+    help="Path to sqlite3 database for world / player state (default: %(default)s)",
     type=Path,
-    default="save",
+    default="server.db",
 )
 parser.add_argument(
     "-l",
@@ -42,22 +54,8 @@ args = parser.parse_args()
 
 # set up logger level
 logging.basicConfig(level=logging.getLevelName(args.level))
-logger = logging.getLogger(__name__)
-logger.info(f"Configured logger at level {args.level}")
 
-# Ensure the save-path exists and is a directory
-logger.info(f"Checking savepath '{args.savepath}'")
-try:
-    if args.savepath.exists():
-        if not args.savepath.is_dir():
-            raise NotADirectoryError(args.savepath)
-    else:
-        args.savepath.mkdir()
-except:
-    logger.exception(f"Error opening or creating savepath '{args.savepath}'")
-    raise SystemExit(1)
-
-# Run server!
-logger.info(f"Launching server loop for {args.address}:{args.port}")
-with Server((args.address, args.port), args.savepath) as s:
-    s.run()
+# open the db
+with Sqlite3(args.database) as db:
+    # Run the server!
+    Server((args.address, args.port), db).run()

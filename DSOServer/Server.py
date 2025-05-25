@@ -1,15 +1,14 @@
-import socket
-# import sys
 import selectors
+import socket
+from datetime import datetime
 from logging import getLogger
+from os import getpid
+from time import time
 
-# from os import getpid
-# from time import time
-# from datetime import datetime
+from .Compression import RLECompress, RLEUncompress, DecodeString, EncodeString, i32
+from .State import State
 
-# from .compression import RLECompress, RLEUncompress
-from .state import State
-from .player import Player
+logger = getLogger(__name__)
 
 
 # helper funcs
@@ -27,52 +26,37 @@ def hexdump(data: bytes):
         offset += 16
 
 
-def buildSlotResults(perm_id):
+def buildSlotResults(state, perm_id):
     # 'dsIN', 4 bytes myPermId, 4x1 byte slot permission levels
     # perm. id >= 0x80000000 gives "No host response"
-    player = players[perm_id]
+    player = state.players[perm_id]
 
-    response = bytes("dsIN", "ascii") + perm_id.to_bytes(4, "little")
+    response = bytes("dsIN", "ascii") + i32(perm_id)
     for i in range(4):
         response += bytes([player.get_perm(i)])
 
     # currently selected name
-    response += encodeString(player.get_name(player.get_slot()))
+    response += EncodeString(player.get_name(player.get_slot()))
 
     # all 4 player names w/ flag
     for i in range(4):
-        response += player.get_flag(i).to_bytes(4, "little") + encodeString(
-            player.get_name(i)
-        )
+        response += i32(player.get_flag(i)) + EncodeString(player.get_name(i))
 
     # "Process ID"
-    response += getpid().to_bytes(4, "little")
+    response += i32(getpid())
 
     # self.logger.debug("Sending TEN Init response")
     # hexdump(response)
     return response
 
 
-def encodeString(string):
-    return (len(string) + 1).to_bytes(4, "little") + bytes(string, "ascii") + bytes(1)
-
-
-def decodeString(data):
-    length = int.from_bytes(data[0:4], byteorder="little")
-    # check length: 4b msg_length, then message
-    assert len(data) == 4 + length
-    # check null-terminator
-    assert data[-1] == 0
-    return str(data[4:-1], "ascii")
-
-
 # A Connection class handles connection to a client
 #  Provides method to read and write - when a complete packet is "read", it takes game action
 class Connection:
+    __slots__ = "socket", "buf", "len", "compressed", "player"
+
     def __init__(self, socket):
-        self.logger = getLogger(__name__)
         self.socket = socket
-        self.socket.setblocking(False)
 
         # buffers for the incoming packet read
         self.buf = bytearray()
@@ -80,40 +64,42 @@ class Connection:
         self.compressed = False
 
         # tracks a player object which can be saved / loaded
-        self.player = None
+        self.player = 0
 
-    def handle(self, data):
+    def handle(self, data, state):
         # check tag (first 4 bytes) of payload
         id, payload = str(data[0:4], "ascii"), data[4:]
 
-        self.logger.debug("Packet received (id=%s, payload=%s)", id, payload)
+        logger.debug("Packet received (id=%s, payload=%s)", id, payload)
+
+        # ###############
         # The two supported Launcher commands
         if id == "LAHI":
-            self.logger.debug("Received launcher info request")
+            logger.debug("Received launcher info request")
 
-            info = "==TEN TWO==\r\n\r\nDevelopment DSO server at greg-kennedy.com\r\nTotal players online: who knows?\0"
+            # TODO: replace this with a user-configurable message and a real player count
+            info = "==TEN TWO==\r\n\r\nDevelopment DSO server at greg-kennedy.com\r\nTotal players online: who knows?"
 
-            response = (
-                bytes("laHI", "ascii")
-                + len(info).to_bytes(4, "little")
-                + bytes(info, "ascii")
-            )
+            response = bytes("laHI", "ascii") + EncodeString(info)
 
             return self.send(response, False)
 
         elif id == "LAUP":
-            userLen = int.from_bytes(payload[0:4], byteorder="little")
-            assert payload[4 + userLen - 1] == 0
-            username = str(payload[4 : 4 + userLen - 1], "ascii")
+            logger.debug("Received launcher username/password request")
 
-            passLen = int.from_bytes(
-                payload[4 + userLen : 4 + userLen + 4], byteorder="little"
+            # TODO: replace this with calls to DecodeString
+            user_len = int.from_bytes(payload[0:4], byteorder="little")
+            assert payload[4 + user_len - 1] == 0
+            username = str(payload[4 : 4 + user_len - 1], "ascii")
+
+            pass_len = int.from_bytes(
+                payload[4 + user_len : 4 + user_len + 4], byteorder="little"
             )
-            assert payload[4 + userLen + 4 + passLen - 1] == 0
+            assert payload[4 + user_len + 4 + pass_len - 1] == 0
             password = str(
-                payload[4 + userLen + 4 : 4 + userLen + 4 + passLen - 1], "ascii"
+                payload[4 + user_len + 4 : 4 + user_len + 4 + pass_len - 1], "ascii"
             )
-            self.logger.debug(
+            logger.debug(
                 "Received launcher login request (user="
                 + username
                 + " password="
@@ -121,6 +107,7 @@ class Connection:
                 + ")"
             )
 
+            # TODO: use database to get username and password, and generate token
             if username != "username":
                 ok = "laNO"
                 msg = "Unknown user '" + username + "'\0"
@@ -131,59 +118,58 @@ class Connection:
                 ok = "laOK"
                 msg = "abcd1234\0"
 
-            response = (
-                bytes(ok, "ascii")
-                + len(msg).to_bytes(4, "little")
-                + bytes(msg, "ascii")
-            )
+            response = bytes(ok, "ascii") + i32(len(msg)) + bytes(msg, "ascii")
 
             return self.send(response, False)
 
         #### GAME COMMANDS
-
         elif id == "DSIT":
             # TEN Init
-            token = decodeString(payload)
-            self.logger.debug("Received TEN Init packet (token=%s)", token)
+            token = DecodeString(payload)
+            logger.debug("Received TEN Init packet (token=%s)", token)
 
             # if you close the socket after receiving this packet without responding,
             #  the remote reports this as "Account still logged on".
 
-            # TODO: load player object from disk
-            #  for now we create a dummy one
-            self.player = Player("Player")
+            if token == "abcd1234":
+                # TODO: load player object from disk
+                #  for now we create a dummy one
+                self.player = state.add_player("Player")
 
-            # If the user is already logged in, respond 'dsNI' instead
-            # response = bytes('dsNI', 'ascii')
+                # If the user is already logged in, respond 'dsNI' instead
+                # response = bytes('dsNI', 'ascii')
 
-            return self.send(buildSlotResults(self.player))
+                return self.send(buildSlotResults(state, self.player))
+            else:
+                # Login error, kill client
+                return False
 
         elif id == "DSLG":
             # client uploading logs to us
             #  the format is: 4 bytes string length, null-terminated ASCII string
-            msg = decodeString(payload)
-            self.logger.debug("Received client log: %s", msg)
+            msg = DecodeString(payload)
+            logger.debug("Received client log: %s", msg)
 
             # no response to this
             return True
 
         elif id == "DSSL":
             assert len(payload) == 0
-            self.logger.info("Received client ping")
+            logger.info("Received client ping")
 
-            response = bytes("dsSL", "ascii") + int(time()).to_bytes(4, "little")
+            response = bytes("dsSL", "ascii") + i32(int(time()))
             return self.send(response)
 
         elif id == "DSNS":
             # Client name selection - they want to change the current Slot
             assert len(payload) == 4
             slot_id = int.from_bytes(payload[0:4], byteorder="little")
-            self.logger.info("Received New Slot Choice: %d", slot_id)
+            logger.info("Received New Slot Choice: %d", slot_id)
 
-            player.set_slot(slot_id)
+            state.players[self.player].set_slot(slot_id)
 
             # give back the player info struct again
-            return self.send(buildSlotResults(self.player))
+            return self.send(buildSlotResults(state, self.player))
 
         elif id == "DSPS":
             # Client "set position"
@@ -193,7 +179,7 @@ class Connection:
             x = int.from_bytes(payload[8:12], byteorder="little")
             y = int.from_bytes(payload[12:16], byteorder="little")
             reg = int.from_bytes(payload[16:20], byteorder="little")
-            self.logger.info(
+            logger.info(
                 "Received Set Position for %d (type %d): (x=%d, y=%d, reg=%d)",
                 perm_id,
                 unknown,
@@ -202,18 +188,18 @@ class Connection:
                 reg,
             )
 
-            player.set_position(x, y, reg)
+            state.players[self.player].set_position(x, y, reg)
 
             # the "response" is a collected list of positions, where "1" is the count and then the payloads are from each other packet
             response = (
                 bytes("dsPS", "ascii")
-                + perm_id.to_bytes(4, "little")
-                + (1).to_bytes(4, "little")
-                + perm_id.to_bytes(4, "little")
-                + unknown.to_bytes(4, "little")
-                + x.to_bytes(4, "little")
-                + y.to_bytes(4, "little")
-                + reg.to_bytes(4, "little")
+                + i32(perm_id)
+                + i32((1))
+                + i32(perm_id)
+                + i32(unknown)
+                + i32(x)
+                + i32(y)
+                + i32(reg)
             )
             return self.send(response)
 
@@ -221,7 +207,7 @@ class Connection:
             # Client requesting Host Date
             assert len(payload) == 4
             perm_id = int.from_bytes(payload[0:4], byteorder="little")
-            self.logger.info("Received Host Date req from %d", perm_id)
+            logger.info("Received Host Date req from %d", perm_id)
 
             # calculate days and seconds since Jan. 1 of this year
             #  TODO: this may be incorrect, it might be days since epoch, or seconds since, etc
@@ -231,11 +217,7 @@ class Connection:
             )
             diff = now - epoch
 
-            response = (
-                bytes("dsDT", "ascii")
-                + diff.seconds.to_bytes(4, "little")
-                + diff.days.to_bytes(4, "little")
-            )
+            response = bytes("dsDT", "ascii") + i32(diff.seconds) + i32(diff.days)
             return self.send(response)
 
         elif id == "DSRS":
@@ -243,15 +225,13 @@ class Connection:
             assert len(payload) == 8
             perm_id = int.from_bytes(payload[0:4], byteorder="little")
             slot_id = int.from_bytes(payload[4:8], byteorder="little")
-            self.logger.info(
-                "Received 'Read Seed' (%d) request from %d", slot_id, perm_id
-            )
+            logger.info("Received 'Read Seed' (%d) request from %d", slot_id, perm_id)
 
             response = (
                 bytes("dsRS", "ascii")
-                + perm_id.to_bytes(4, "little")
-                + slot_id.to_bytes(4, "little")
-                + player.get_seed(slot_id).to_bytes(4, "little")
+                + i32(perm_id)
+                + i32(slot_id)
+                + i32(state.players[self.player].get_seed(slot_id))
             )
             return self.send(response)
 
@@ -260,36 +240,28 @@ class Connection:
             assert len(payload) == 8
             perm_id = int.from_bytes(payload[0:4], byteorder="little")
             slot_id = int.from_bytes(payload[4:8], byteorder="little")
-            self.logger.info(
-                "Received 'Roll Dice' request from %d:%d", perm_id, slot_id
-            )
+            logger.info("Received 'Roll Dice' request from %d:%d", perm_id, slot_id)
 
             response = (
                 bytes("dsRL", "ascii")
-                + perm_id.to_bytes(4, "little")
-                + slot_id.to_bytes(4, "little")
-                + player.inc_seed(slot_id).to_bytes(4, "little")
+                + i32(perm_id)
+                + i32(slot_id)
+                + i32(state.players[self.player].inc_seed(slot_id))
             )
             return self.send(response)
 
         elif id == "DSNM":
             # Client checking if desired name is OK.
             slot_id = int.from_bytes(payload[0:4], byteorder="little")
-            name = decodeString(payload[4:])
-            self.logger.info(
-                "Received 'Name OK?' request, slot=%d name=%s", slot_id, name
-            )
+            name = DecodeString(payload[4:])
+            logger.info("Received 'Name OK?' request, slot=%d name=%s", slot_id, name)
 
             # TODO: We always approve names now, but it would be good to know
             #  which packet indicates "name no good" (dsNO?  dsNR?)
-            player.set_name(slot_id, name)
+            state.players[self.player].set_name(slot_id, name)
 
             # the client also complains if you ack a 0-byte name, so we should not do that either
-            response = (
-                bytes("dsNM", "ascii")
-                + slot_id.to_bytes(4, "little")
-                + encodeString(name)
-            )
+            response = bytes("dsNM", "ascii") + i32(slot_id) + EncodeString(name)
             return self.send(response)
 
         elif id == "DSRI":
@@ -297,23 +269,25 @@ class Connection:
             assert len(payload) == 8
             perm_id = int.from_bytes(payload[0:4], byteorder="little")
             region_id = int.from_bytes(payload[4:8], byteorder="little")
-            self.logger.info(
-                "Received Region Info request, perm_id=%d rgn=%d", perm_id, region_id
+            logger.info(
+                "Received Region Info request, perm_id=%d rgn=%d",
+                perm_id,
+                region_id,
             )
 
-            ids = players.ids_in_region(region_id)
-            self.logger.info(
+            ids = state.ids_in_region(region_id)
+            logger.info(
                 " There are " + str(len(ids)) + " players in region: " + str(ids)
             )
 
             response = (
                 bytes("dsRI", "ascii")
-                + perm_id.to_bytes(4, "little")
-                + region_id.to_bytes(4, "little")
+                + i32(perm_id)
+                + i32(region_id)
                 + (-len(ids)).to_bytes(4, "little", signed=True)
             )
             for i in ids:
-                response += i.to_bytes(4, "little")
+                response += i32(i)
 
             return self.send(response)
 
@@ -331,7 +305,7 @@ class Connection:
             rd_addr = int.from_bytes(payload[16:20], byteorder="little")
             rd_len = int.from_bytes(payload[20:24], "little")
 
-            self.logger.info(
+            logger.info(
                 "Received 'Read' (block=%s) request from %d: (index1=%d, index2=%d, addr=%d, len=%d)",
                 rd_block,
                 perm_id,
@@ -358,29 +332,28 @@ class Connection:
                 assert rd_index1 == 0
                 assert rd_index2 == 0
                 #  address and length of data block to read
-                key = 1
-                block = player.read("PCSA", rd_addr, rd_len)
+                block = state.players[self.player].read("PCSA", rd_addr, rd_len)
 
             elif rd_block == "PCIN" or rd_block == "PCOU" or rd_block == "PCQK":
                 # read of "global" shared memory area - things like high score tables, etc
                 #  each type is numbered differently, there are 0x16 of them
                 # Stub these in for now with all-0
                 assert rd_index2 == 0
-                key = 1
-                block = players[rd_index1].read(rd_block, rd_addr, rd_len)
+                block = state.players[rd_index1].read(rd_block, rd_addr, rd_len)
 
             else:
                 assert False
 
+            key = 1
             response = (
                 bytes("dsRD", "ascii")
-                + perm_id.to_bytes(4, "little")
+                + i32(perm_id)
                 + bytes(rd_block, "ascii")
-                + rd_index1.to_bytes(4, "little")
-                + rd_index2.to_bytes(4, "little")
-                + key.to_bytes(4, "little")
-                + rd_addr.to_bytes(4, "little")
-                + rd_len.to_bytes(4, "little")
+                + i32(rd_index1)
+                + i32(rd_index2)
+                + i32(key)
+                + i32(rd_addr)
+                + i32(rd_len)
                 + block
             )
             return self.send(response)
@@ -401,7 +374,7 @@ class Connection:
             wt_addr = int.from_bytes(payload[20:24], byteorder="little")
             wt_len = int.from_bytes(payload[24:28], "little")
             assert wt_len == len(payload[28:])
-            self.logger.info(
+            logger.info(
                 "Received 'Write Broadcast' (block=%s) request from %d: (index1=%d, index2=%d, key=%d, addr=%d, len=%d)",
                 wt_block,
                 perm_id,
@@ -430,12 +403,12 @@ class Connection:
 
             key = 1
             response += (
-                perm_id.to_bytes(4, "little")
+                i32(perm_id)
                 + bytes(wt_block, "ascii")
-                + wt_index1.to_bytes(4, "little")
-                + wt_index2.to_bytes(4, "little")
-                + key.to_bytes(4, "little")
-                + wt_len.to_bytes(4, "little")
+                + i32(wt_index1)
+                + i32(wt_index2)
+                + i32(key)
+                + i32(wt_len)
             )
             return self.send(response)
 
@@ -455,7 +428,7 @@ class Connection:
             wt_len = int.from_bytes(payload[24:28], "little")
             assert wt_len == len(payload[28:])
 
-            self.logger.info(
+            logger.info(
                 "Received 'Write Player Char' (block=%s) request from %d: (index1=%d, index2=%d, key=%d, addr=%d, len=%d)",
                 wt_block,
                 perm_id,
@@ -470,14 +443,14 @@ class Connection:
                 # trying to save character - everything is ignored except the address and payload
                 assert wt_index1 == 0
                 assert wt_index2 == 0
-                player.write("PCSA", wt_addr, payload[28:])
+                state.players[self.player].write("PCSA", wt_addr, payload[28:])
 
             elif wt_block == "PCIN" or wt_block == "PCOU" or wt_block == "PCQK":
                 # trying to write to someone's 'outbox'
                 if wt_index1 == 0:
                     wt_index1 = self.player
                 assert wt_index2 == 0
-                players[wt_index1].write(wt_block, wt_addr, payload[28:])
+                state.players[wt_index1].write(wt_block, wt_addr, payload[28:])
 
             else:
                 hexdump(payload)
@@ -485,17 +458,20 @@ class Connection:
             return True
 
         else:
-            self.logger.debug(
-                "Packet received (len=%d, id=%s, payload=%s)", len(payload), id, payload
+            logger.debug(
+                "Packet received (len=%d, id=%s, payload=%s)",
+                len(payload),
+                id,
+                payload,
             )
             hexdump(payload)
-            self.logger.debug("Ignoring packet")
+            logger.debug("Ignoring packet")
             return True
 
     # helper to send a packet to the connected client
     #  it tries RLE compression for size reduction, and prepends the length as well
-    def send(self, data, allowCompress=True):
-        if allowCompress:
+    def send(self, data, allow_compress=True):
+        if allow_compress:
             compressed = RLECompress(data)
             if len(compressed) < len(data):
                 pkt = ((2 + len(compressed)) | 0x8000).to_bytes(
@@ -513,28 +489,27 @@ class Connection:
             return False
         return True
 
-    # Read helper for packets - consumes some bytes and triggers the packet handler if done
-    def recv(self):
+    def recv(self, state):
+        """Read helper for packets - consumes some bytes and triggers the packet handler if done"""
+
         # read time!  get 2 bytes, then N bytes
         if self.len == 0:
-            # print("Reading", conn, "len")
             buf = self.socket.recv(2 - len(self.buf))
             if not buf:
                 # 0-byte response here means the client disconnected.
                 return False
             else:
+                # got at least one byte, append it to our read-buffer
                 self.buf += buf
                 if len(self.buf) == 2:
-                    # got our 2 bytes, now we expect len bytes
+                    # got our 2 bytes, now we expect len - 2 more bytes
                     pkt_len = int.from_bytes(self.buf, byteorder="little")
                     self.compressed = pkt_len & 0x8000
                     self.len = (pkt_len & 0x7FFF) - 2
                     self.buf.clear()
 
         else:
-            # print("OK! now reading", key.data["len"])
             buf = self.socket.recv(self.len - len(self.buf))
-
             if not buf:
                 # 0-byte response here means the client disconnected.
                 return False
@@ -542,7 +517,8 @@ class Connection:
                 self.buf += buf
                 if len(self.buf) == self.len:
                     if not self.handle(
-                        RLEUncompress(self.buf) if self.compressed else self.buf
+                        RLEUncompress(self.buf) if self.compressed else self.buf,
+                        state,
                     ):
                         return False
 
@@ -551,135 +527,89 @@ class Connection:
 
         return True
 
-    def close(self):
+    def close(self, state):
         # try dsCL see if we can get them to drop
         if self.player:
-            player.save("player.pickle")
-            response = bytes("dsCL", "ascii") + self.player.to_bytes(4, "little")
+            # player.save("player.pickle")
+            response = bytes("dsCL", "ascii") + i32(self.player)
             self.send(response)
 
         # close socket
         self.socket.close()
 
 
-# a class that holds all connected players
-class Players:
-
-
-    # Players class has locks on accessing anything
-    #  And helper methods for searching by name, region, etc
-    def __init__(self):
-        self.__players = {}
-
-    def __getitem__(self, arg):
-        return self.__players[arg]
-
-    def add_player(self, name):
-        while True:
-            # roll up a new perm_id for this session
-            new_id = randrange(1, 0x7FFFFFFF)
-            if new_id not in self.__players:
-                self.__players[new_id] = Player(name)
-                return new_id
-
-    def drop_player(self, id):
-        try:
-            del self.__players[id]
-        except KeyError:
-            print(f"Couldn't drop player {id} because they are already dropped")
-
-
-    def id_by_name(self, name):
-        for id, player in self.__players.items():
-            if player.__name == name:
-                return id
-
-        return None
-
-    def ids_in_region(self, region):
-        ids = []
-        for id, player in self.__players.items():
-            if player.get_region() == region:
-                ids.append(id)
-
-        return ids
-
 class Server:
-    def __init__(self, address_port, savepath):
+    __slots__ = "address_port", "database"
+
+    def __init__(self, address_port, database):
+        # Save the address / port for server launch (below)
         self.address_port = address_port
-        self.savepath = savepath
-
-        # Set up the logger and "global" values
-        self.logger = logger = getLogger(__name__)
-
-        self.state = State()
-        self.connections = {}
-
-        self.logger.info("Attempting to resume existing world")
-        try:
-            self.state.load(self.savepath / "world.pickle")
-        except FileNotFoundError:
-            self.logger.info(
-                "Did not find existing world to resume, will create from empty state"
-            )
-        except:
-            self.logger.exception("Error encountered resuming gamestate")
-            raise
+        self.database = database
 
     def run(self):
+        """Runs the server."""
+
+        # Create world-state and attach it to the database connection
+        state = State(self.database)
+
+        # map of all connected clients
+        connections = {}
+
         # get a listen socket, IPV4-only
-        self.logger.info("Opening listen socket")
-        sock_listen = socket.create_server(self.address_port, reuse_port=True)
+        logger.info(f"Opening listen socket on {self.address_port}")
+        sock_listen = socket.create_server(self.address_port)
         sock_listen.setblocking(False)
 
         # create a selectors object and register listen socket in it
         sel = selectors.DefaultSelector()
         sel.register(sock_listen, selectors.EVENT_READ)
-    
+        logger.info("Awaiting incoming connections")
+
         # main server loop
         running = True
         while running:
-            # try:
-            events = sel.select()
-            for key, mask in events:
-                if key.fileobj == sock_listen:
-                    # activity on the listen-socket is a new connection we can accept
-                    #  TODO: accept() can fail, which may raise an exception... I think
-                    conn, addr = sock_listen.accept()
-    
-                    self.logger.info(f"Received new incoming connection from {addr}: {conn}")
-    
-                    # Wrap the socket in a Connection object and add to the connections dict
-                    conn_obj = Connection(conn)
-                    self.connections[conn.fileno()] = conn_obj
-    
-                    # request notif. of future bytes available for reading
-                    sel.register(conn, selectors.EVENT_READ)
-                else:
-                    # activity on a different socket
-                    if mask & selectors.EVENT_READ:
-                        c = self.connections[key.fd]
-                        if not c.recv():
-                            self.logger.info(f"Dropping connection {key}")
-                            # do not notify about this again
-                            sel.unregister(key.fileobj)
-                            # drop conn from list
-                            c.close()
-                            del self.connections[key.fd]
+            try:
+                events = sel.select()
+                logger.info("EVENT!")
+                for key, mask in events:
+                    if key.fileobj == sock_listen:
+                        # activity on the listen-socket is a new connection we can accept
+                        #  TODO: accept() can fail, which may raise an exception... I think
+                        conn, addr = sock_listen.accept()
 
+                        logger.info(
+                            f"Received new incoming connection from {addr}: {conn}"
+                        )
 
+                        # Wrap the socket in a Connection object and add to the connections dict
+                        conn.setblocking(False)
+                        conn_obj = Connection(conn)
+                        connections[conn.fileno()] = conn_obj
+
+                        # request notif. of future bytes available for reading
+                        sel.register(conn, selectors.EVENT_READ)
+                    else:
+                        # activity on a different socket
+                        if mask & selectors.EVENT_READ:
+                            c = connections[key.fd]
+                            if not c.recv(state):
+                                logger.info(f"Dropping connection {key}")
+                                # do not notify about this again
+                                sel.unregister(key.fileobj)
+                                # drop conn from list
+                                c.close(state)
+                                del connections[key.fd]
+
+            except Exception as e:
+                print("Got an error: ", e)
+                running = False
+
+        # great, done running, shut everything down
         sel.close()
 
-    # except Exception as e:
-    # print('Got an error: ', e)
-    # running = False
+        for c in connections:
+            c.close()
 
-    def close(self):
-        self.logger.info("Saving world state")
-        self.state.save(self.savepath / "world.pickle")
+        sock_listen.close()
 
-    def __enter__(self):
-        return self
-
-    def __exit__(self, type, value, tb):
-        self.close()
+        state.close()

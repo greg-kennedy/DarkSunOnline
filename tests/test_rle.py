@@ -1,4 +1,4 @@
-from DSOServer.compression import RLECompress, RLEUncompress
+from DSOServer.Compression import RLECompress, RLEUncompress
 
 
 def test_uncompress():
@@ -13,8 +13,8 @@ def test_compress():
     assert RLECompress(bytes()) == bytes()
     assert RLECompress(bytes([0])) == bytes([0, 0])
     assert RLECompress(bytes([0, 0])) == bytes([0xff])
-    assert RLECompress(bytes([0 for i in range(129)])) == bytes([0x80])
-    assert RLECompress(bytes([0 for i in range(130)])) == bytes([0x80, 0, 0])
+    assert RLECompress(bytes([0 for _ in range(129)])) == bytes([0x80])
+    assert RLECompress(bytes([0 for _ in range(130)])) == bytes([0x80, 0, 0])
     assert RLECompress(bytes([1])) == bytes([0, 1])
     assert RLECompress(bytes([1, 0])) == bytes([1, 1, 0])
     assert RLECompress(bytes([i for i in range(128)])) == bytes([0x7f] + [i for i in range(128)])
