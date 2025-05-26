@@ -4,6 +4,7 @@ from datetime import datetime
 from logging import getLogger
 from os import getpid
 from time import time
+from sys import stdin
 
 from .Compression import RLECompress, RLEUncompress, DecodeString, EncodeString, i32
 from .State import State
@@ -33,14 +34,14 @@ def buildSlotResults(state, perm_id):
 
     response = bytes("dsIN", "ascii") + i32(perm_id)
     for i in range(4):
-        response += bytes([player.data_slot['perm'][i]])
+        response += bytes([player.slots["perm"][i]])
 
     # currently selected name
-    response += EncodeString(player.data_slot['name'][player.data_slot['slot']])
+    response += EncodeString(player.slots["name"][player.slots["slot"]])
 
     # all 4 player names w/ flag
     for i in range(4):
-        response += i32(player.data_slot['flag'][i]) + EncodeString(player.data_slot['name'][i])
+        response += i32(player.slots["flag"][i]) + EncodeString(player.slots["name"][i])
 
     # "Process ID"
     response += i32(getpid())
@@ -64,21 +65,21 @@ class Connection:
         self.compressed = False
 
         # tracks a player object which can be saved / loaded
-        self.player = 0
+        self.player = None
 
     def handle(self, data, state):
         # check tag (first 4 bytes) of payload
         id, payload = str(data[0:4], "ascii"), data[4:]
 
-        #logger.debug("Packet received (id=%s, payload=%s)", id, payload)
+        # logger.debug("Packet received (id=%s, payload=%s)", id, payload)
 
         # ###############
         # The two supported Launcher commands
         if id == "LAHI":
             logger.debug("Received launcher info request")
 
-            # TODO: replace this with a user-configurable message and a real player count
-            info = "==TEN TWO==\r\n\r\nDevelopment DSO server at greg-kennedy.com\r\nTotal players online: who knows?"
+            # TODO: replace this with a user-configurable message
+            info = f"==TEN TWO==\r\n\r\nDevelopment DSO server at greg-kennedy.com\r\nTotal players online: {len(state.players)}"
 
             response = bytes("laHI", "ascii") + EncodeString(info)
 
@@ -125,17 +126,17 @@ class Connection:
             # if you close the socket after receiving this packet without responding,
             #  the remote reports this as "Account still logged on".
 
-            username = state.return_login_token(token)
+            perm_id = state.return_login_token(token)
 
-            if username:
-                logger.debug(" . Got valid login token (username=%s)", username)
+            if perm_id:
+                logger.debug(" . Got valid login token (perm_id=%s)", perm_id)
 
-                if state.id_by_name(username):
+                if perm_id in state.players:
                     # player is already logged in!
-                    return self.send( bytes('dsNI', 'ascii') , False)
+                    return self.send(bytes("dsNI", "ascii"), False)
 
-                self.player = state.add_player(username)
-                return self.send(buildSlotResults(state, self.player))
+                self.player = state.add_player(perm_id)
+                return self.send(buildSlotResults(state, perm_id))
             else:
                 logger.debug(" . Invalid login token, disconnecting")
                 # Login error, kill client
@@ -163,10 +164,10 @@ class Connection:
             slot_id = int.from_bytes(payload[0:4], byteorder="little")
             logger.info("Received New Slot Choice: %d", slot_id)
 
-            state.players[self.player].data_slot['slot'] = slot_id
+            self.player.slots["slot"] = slot_id
 
             # give back the player info struct again
-            return self.send(buildSlotResults(state, self.player))
+            return self.send(buildSlotResults(state, self.player.id))
 
         elif id == "DSPS":
             # Client "set position"
@@ -185,13 +186,13 @@ class Connection:
                 reg,
             )
 
-            state.players[self.player].set_position(x, y, reg)
+            self.player.set_position(x, y, reg)
 
             # the "response" is a collected list of positions, where "1" is the count and then the payloads are from each other packet
             response = (
                 bytes("dsPS", "ascii")
                 + i32(perm_id)
-                + i32((1))
+                + i32(1)
                 + i32(perm_id)
                 + i32(unknown)
                 + i32(x)
@@ -228,7 +229,7 @@ class Connection:
                 bytes("dsRS", "ascii")
                 + i32(perm_id)
                 + i32(slot_id)
-                + i32(state.players[self.player].data_slot['seed'][slot_id])
+                + i32(self.player.slots["seed"][slot_id])
             )
             return self.send(response)
 
@@ -243,7 +244,7 @@ class Connection:
                 bytes("dsRL", "ascii")
                 + i32(perm_id)
                 + i32(slot_id)
-                + i32(state.players[self.player].inc_seed(slot_id))
+                + i32(self.player.inc_seed(slot_id))
             )
             return self.send(response)
 
@@ -255,7 +256,7 @@ class Connection:
 
             # TODO: We always approve names now, but it would be good to know
             #  which packet indicates "name no good" (dsNO?  dsNR?)
-            state.players[self.player].data_slot['name'][slot_id]
+            self.player.slots["name"][slot_id] = name
 
             # the client also complains if you ack a 0-byte name, so we should not do that either
             response = bytes("dsNM", "ascii") + i32(slot_id) + EncodeString(name)
@@ -329,7 +330,7 @@ class Connection:
                 assert rd_index1 == 0
                 assert rd_index2 == 0
                 #  address and length of data block to read
-                block = state.players[self.player].read("PCSA", rd_addr, rd_len)
+                block = self.player.read("PCSA", rd_addr, rd_len)
 
             elif rd_block == "PCIN" or rd_block == "PCOU" or rd_block == "PCQK":
                 # read of "global" shared memory area - things like high score tables, etc
@@ -440,12 +441,12 @@ class Connection:
                 # trying to save character - everything is ignored except the address and payload
                 assert wt_index1 == 0
                 assert wt_index2 == 0
-                state.players[self.player].write("PCSA", wt_addr, payload[28:])
+                self.player.write("PCSA", wt_addr, payload[28:])
 
             elif wt_block == "PCIN" or wt_block == "PCOU" or wt_block == "PCQK":
                 # trying to write to someone's 'outbox'
                 if wt_index1 == 0:
-                    wt_index1 = self.player
+                    wt_index1 = self.player.id
                 assert wt_index2 == 0
                 state.players[wt_index1].write(wt_block, wt_addr, payload[28:])
 
@@ -527,8 +528,8 @@ class Connection:
     def close(self, state):
         # try dsCL see if we can get them to drop
         if self.player:
-            state.drop_player(self.player)
-            response = bytes("dsCL", "ascii") + i32(self.player)
+            state.drop_player(self.player.id)
+            response = bytes("dsCL", "ascii") + i32(self.player.id)
             self.send(response)
 
         # close socket
@@ -552,14 +553,16 @@ class Server:
         # map of all connected clients
         connections = {}
 
+        # create a selectors object and register stdin to it (to accept console commands)
+        sel = selectors.DefaultSelector()
+        sel.register(stdin, selectors.EVENT_READ)
+
         # get a listen socket, IPV4-only
         logger.info(f"Opening listen socket on {self.address_port}")
         sock_listen = socket.create_server(self.address_port)
         sock_listen.setblocking(False)
-
-        # create a selectors object and register listen socket in it
-        sel = selectors.DefaultSelector()
         sel.register(sock_listen, selectors.EVENT_READ)
+
         logger.info("Awaiting incoming connections")
 
         # main server loop
@@ -568,7 +571,17 @@ class Server:
             try:
                 events = sel.select()
                 for key, mask in events:
-                    if key.fileobj == sock_listen:
+                    if key.fileobj == stdin:
+                        # accepting input from the sysop...
+                        #  read some bytes looking for linefeeds
+                        # this isn't great if stdin is really fast but is OK for console input
+                        line = stdin.readline().strip()
+                        if line == "exit" or line == "quit":
+                            running = False
+
+                        # other things can go here e.g. broadcast, drop player, etc
+
+                    elif key.fileobj == sock_listen:
                         # activity on the listen-socket is a new connection we can accept
                         #  TODO: accept() can fail, which may raise an exception... I think
                         conn, addr = sock_listen.accept()
@@ -596,6 +609,10 @@ class Server:
                                 c.close(state)
                                 del connections[key.fd]
 
+            except KeyboardInterrupt:
+                print("Received Ctrl+C, shutting down")
+                running = False
+
             except Exception as e:
                 print("Got an error: ", e)
                 running = False
@@ -603,8 +620,8 @@ class Server:
         # great, done running, shut everything down
         sel.close()
 
-        for c in connections:
-            c.close()
+        for c in connections.values():
+            c.close(state)
 
         sock_listen.close()
 

@@ -14,6 +14,10 @@ class Database:
     State and Player classes serialize their state using these methods.
     """
 
+    def get_login(self, username, password):
+        """Return the ID matching a login on username + password"""
+        return None
+
     def get_glob(self):
         """Return a dict of key => value read from the db"""
         return {}
@@ -29,10 +33,6 @@ class Database:
     def get_player(self, username):
         """Return a dict of key => value for the player of id"""
         return {}
-
-    def get_login(self, username, password):
-        """Return a matching row from the DB on username + password"""
-        return None
 
     def save_glob(self, data):
         """Save a GLOB dict to the db"""
@@ -66,16 +66,16 @@ class Sqlite3(Database):
 
         # create tables if not exist
         self.connection.execute(
-            "CREATE TABLE IF NOT EXISTS glob(key INTEGER NOT NULL, data BLOB, PRIMARY KEY(key)) WITHOUT ROWID"
+            "CREATE TABLE IF NOT EXISTS login(id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL COLLATE NOCASE, password TEXT NOT NULL, UNIQUE(username)) STRICT"
         )
         self.connection.execute(
-            "CREATE TABLE IF NOT EXISTS glrg(region INTEGER NOT NULL, key INTEGER NOT NULL, data BLOB, PRIMARY KEY(region, key)) WITHOUT ROWID"
+            "CREATE TABLE IF NOT EXISTS glob(key INTEGER PRIMARY KEY, data BLOB NOT NULL) STRICT"
         )
         self.connection.execute(
-            "CREATE TABLE IF NOT EXISTS player(username STRING NOT NULL, key INTEGER NOT NULL, data BLOB, PRIMARY KEY(username, key), FOREIGN KEY(username) REFERENCES LOGIN(username)) WITHOUT ROWID"
+            "CREATE TABLE IF NOT EXISTS glrg(region INTEGER NOT NULL, key INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY(region, key)) WITHOUT ROWID, STRICT"
         )
         self.connection.execute(
-            "CREATE TABLE IF NOT EXISTS login(username STRING NOT NULL, password STRING NOT NULL, PRIMARY KEY(username)) WITHOUT ROWID"
+            "CREATE TABLE IF NOT EXISTS player(id INTEGER NOT NULL, key TEXT NOT NULL, data BLOB NOT NULL, PRIMARY KEY(id, key), FOREIGN KEY(id) REFERENCES login(id) ON DELETE CASCADE ON UPDATE CASCADE) WITHOUT ROWID, STRICT"
         )
 
     def __enter__(self):
@@ -84,9 +84,19 @@ class Sqlite3(Database):
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.connection.close()
 
+    def get_login(self, username, password):
+        result = self.connection.execute(
+            "SELECT id FROM login WHERE username=? AND password=?",
+            (username, password),
+        ).fetchone()
+
+        if result:
+            return result[0]
+        return None
+
     def get_glob(self):
         return {
-            key: data
+            key: bytearray(data)
             for key, data in self.connection.execute(
                 "SELECT key, data FROM glob ORDER BY key"
             ).fetchall()
@@ -101,40 +111,38 @@ class Sqlite3(Database):
 
     def get_glrg(self, region):
         return {
-            key: data
+            key: bytearray(data)
             for key, data in self.connection.execute(
                 "SELECT key, data FROM glrg WHERE region=? ORDER BY key", (region,)
             ).fetchall()
         }
 
-    def get_player(self, username):
+    def get_player(self, id):
         return {
-            key: data
+            key: bytearray(data)
             for key, data in self.connection.execute(
-                "SELECT key, data FROM player WHERE username=? ORDER BY key",
-                (username,),
+                "SELECT key, data FROM player WHERE id=? ORDER BY key",
+                (id,),
             ).fetchall()
         }
 
-    def get_login(self, username, password):
-        return self.connection.execute(
-            "SELECT EXISTS(SELECT * FROM login WHERE username=? AND password=?)", (username, password)
-        ).fetchone()[0]
-
     def save_glob(self, glob):
-        self.connection.executemany(
-            "INSERT INTO glob VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET data=excluded.data",
-            glob.items(),
-        )
+        with self.connection as conn:
+            conn.executemany(
+                "INSERT INTO glob VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET data=excluded.data",
+                glob.items(),
+            )
 
     def save_glrg(self, region, glrg):
-        self.connection.executemany(
-            "INSERT INTO glrg VALUES(?, ?, ?) ON CONFLICT(region, key) DO UPDATE SET data=excluded.data",
-            [(region, key, data) for key, data in glrg.items()],
-        )
+        with self.connection as conn:
+            conn.executemany(
+                "INSERT INTO glrg VALUES(?, ?, ?) ON CONFLICT(region, key) DO UPDATE SET data=excluded.data",
+                [(region, key, data) for key, data in glrg.items()],
+            )
 
-    def save_player(self, username, player):
-        self.connection.executemany(
-            "INSERT INTO player VALUES(?, ?, ?) ON CONFLICT(username, key) DO UPDATE SET data=excluded.data",
-            [(username, key, data) for key, data in player.items()],
-        )
+    def save_player(self, id, player):
+        with self.connection as conn:
+            conn.executemany(
+                "INSERT INTO player VALUES(?, ?, ?) ON CONFLICT(id, key) DO UPDATE SET data=excluded.data",
+                [(id, key, data) for key, data in player.items()],
+            )

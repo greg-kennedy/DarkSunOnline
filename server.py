@@ -14,6 +14,7 @@ from pathlib import Path
 # need at least one provider for persistent storage
 #  sqlite3 is fine, you could replace this with something else
 from DSOServer.Database import Sqlite3
+
 # the guts of a running server
 from DSOServer.Server import Server
 

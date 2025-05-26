@@ -5,25 +5,26 @@ from logging import getLogger
 logger = getLogger(__name__)
 
 from time import time
-from random import Random, randrange, randbytes
+from random import Random, randbytes
 
 
-# A class for a single player
 class Player:
+    """A class for a single player"""
 
-    #__slots__ = "database", "name", "data"
+    __slots__ = "database", "id", "data", "slots"
 
-    def __init__(self, database, name):
+    def __init__(self, database, id):
         # shared db
         self.database = database
 
-        # account name
-        self.name = name
+        # account ID (perm_id)
+        self.id = id
 
         # save/resumable player info
-        self.data = database.get_player(name)
+        self.data = database.get_player(id)
 
-        self.data_slot = {
+        # TODO: could this be built from PCSA data or something?
+        self.slots = {
             "slot": 0,
             "perm": [1, 1, 1, 1],
             "seed": [0, 0, 0, 0],
@@ -33,20 +34,23 @@ class Player:
             "region": 0,
         }
 
+    def close(self):
+        self.database.save_player(self.id, self.data)
+
     def inc_seed(self, slot):
         # personal RNG
         random = Random()
-        random.seed(self.data_slot["seed"][slot])
-        self.data_slot["seed"][slot] = random.randrange(0xFFFFFFFF)
+        random.seed(self.slots["seed"][slot])
+        self.slots["seed"][slot] = random.randrange(0xFFFFFFFF)
 
-        return self.data_slot["seed"][slot]
+        return self.slots["seed"][slot]
 
     def set_position(self, x, y, region):
-        self.data_slot["position"] = [x, y]
-        self.data_slot["region"] = region
+        self.slots["position"] = [x, y]
+        self.slots["region"] = region
 
     def read(self, data_type, addr, length):
-        """Read from GLOBal memory"""
+        """Read from player-scoped memory"""
         try:
             data = self.data[data_type][addr : addr + length]
             return data + bytes(length - len(data))
@@ -54,14 +58,11 @@ class Player:
             return bytes(length)
 
     def write(self, data_type, addr, data):
-        """Write to global memory"""
+        """Write to player-scoped memory"""
         try:
             self.data[data_type][addr : addr + len(data)] = data
         except KeyError:
             self.data[data_type] = bytearray(addr) + data
-
-    def close(self):
-        self.database.save_player(self.name, self.data)
 
 
 class State:
@@ -88,11 +89,11 @@ class State:
 
         for player in self.players.values():
             player.close()
-
         self.players = {}
 
         for region, data in self.glrg.items():
             self.database.save_glrg(region, data)
+
         self.glrg = {}
         self.database.save_glob(self.glob)
         self.glob = {}
@@ -141,43 +142,45 @@ class State:
         #  that is anything > 60 seconds old
         expiration = time() - 60
 
-        for token, (username, timestamp) in self.tokens.items():
-            if timestamp < expiration:
-                del self.tokens[token]
+        tokens = {}
+        for token, (id, timestamp) in self.tokens.items():
+            if timestamp > expiration:
+                tokens[token] = (id, timestamp)
+
+        self.tokens = tokens
 
     def get_login_token(self, username, password):
         """Checks a username + password and returns a login token or None"""
 
         self._expire_tokens()
 
-        if self.database.get_login(username, password):
+        id = self.database.get_login(username, password)
+        if id:
             token = randbytes(7).hex()
-            self.tokens[token] = (username, time())
+            self.tokens[token] = (id, time())
             return token
-            
+
         else:
             return None
 
     def return_login_token(self, token):
-        """Returns the username for a supplied login token"""
+        """Returns the ID for a supplied login token"""
 
         self._expire_tokens()
 
-        # now try to retrieve the username
-        detail = self.tokens.get(token)
-        if detail:
-            return detail[0]
-
-        return None
+        # now try to retrieve the player ID
+        id, _ = self.tokens.get(token, (None, None))
+        return id
 
     # #########################################################################
-    def add_player(self, name):
-        while True:
-            # roll up a new perm_id for this session
-            new_id = randrange(1, 0x7FFFFFFF)
-            if new_id not in self.players:
-                self.players[new_id] = Player(self.database, name)
-                return new_id
+    def add_player(self, id):
+        if id not in self.players:
+            player = Player(self.database, id)
+            self.players[id] = player
+            return player
+
+        print(f"Couldn't add player {id} because they are already added")
+        return None
 
     def drop_player(self, id):
         try:
@@ -186,17 +189,10 @@ class State:
         except KeyError:
             print(f"Couldn't drop player {id} because they are already dropped")
 
-    def id_by_name(self, name):
-        for id, player in self.players.items():
-            if player.name == name:
-                return id
-
-        return None
-
     def ids_in_region(self, region):
         ids = []
         for id, player in self.players.items():
-            if player.data_slot['region'] == region:
+            if player.slots["region"] == region:
                 ids.append(id)
 
         return ids
